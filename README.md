@@ -113,3 +113,7 @@ app/src/main/java/com/codexrefresh/app/
 ## 免责声明
 
 本项目与 OpenAI、ChatGPT、Codex 官方无隶属关系。使用者应自行遵守相应服务条款，并承担运行自动化请求的风险。
+
+## 许可证
+
+本项目以 [MIT 许可证](LICENSE)发布。`CodexClient.kt` 中部分实现移植自 [Pi Coding Agent](https://github.com/earendil-works/pi)（MIT），其版权声明与完整许可文本见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
