@@ -1,0 +1,21 @@
+<resources>
+    <!-- Static fallback palette. Android 12+ replaces these roles with Dynamic Color. -->
+    <color name="surface">#FFF8F8</color>
+    <color name="surface_container">#F7ECF0</color>
+    <color name="surface_container_high">#F0E3E8</color>
+    <color name="ink">#24191D</color>
+    <color name="muted">#725D64</color>
+
+    <color name="accent">#A73561</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="primary_container">#FFD9E3</color>
+    <color name="on_primary_container">#3E001D</color>
+    <color name="secondary">#7B5261</color>
+    <color name="secondary_container">#FFD9E4</color>
+    <color name="on_secondary_container">#30111E</color>
+    <color name="tertiary">#80552C</color>
+    <color name="tertiary_container">#FFDCC1</color>
+    <color name="on_tertiary_container">#2E1500</color>
+
+    <color name="destructive">#BA1A1A</color>
+</resources>

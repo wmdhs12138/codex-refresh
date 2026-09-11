@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+
+# Android 本地配置
+local.properties
+
+# IDE
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Kotlin
+.kotlin/
+
+# 签名材料
+*.jks
+*.keystore
+keystore.properties
+
+# 构建产物
+*.apk
+*.aab
+*.ap_
+output-metadata.json
+
+# 系统
+.DS_Store
+Thumbs.db

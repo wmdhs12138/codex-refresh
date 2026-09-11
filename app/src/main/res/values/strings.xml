@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Codex Refresh</string>
+    <string name="status_disconnected">● 尚未连接 Codex</string>
+    <string name="context_empty">等待连接 · 暂无数据</string>
+    <string name="context_success">最近一次激活：成功</string>
+    <string name="context_unverified">最近一次激活：已完成但未验证</string>
+    <string name="auto_busy">自动任务正在进行中，请稍后再试</string>
+    <string name="connect_to_read">连接 Codex 后读取</string>
+    <string name="connect">连接 Codex</string>
+    <string name="logout_confirm_title">退出登录？</string>
+    <string name="logout_confirm_message">这会清除本机登录信息，并停用和取消自动任务。</string>
+    <string name="logout_confirm_action">退出并停用</string>
+    <string name="work_time_equal_error">上班和下班时间不能相同</string>
+    <string name="keep_alive_channel">自动激活后台</string>
+    <string name="keep_alive_channel_description">显示最近一次读取到的五小时与七天窗口重置时间。</string>
+    <string name="keep_alive_title">自动激活已启用</string>
+    <string name="keep_alive_restoring_title">正在恢复自动激活后台</string>
+    <string name="keep_alive_restoring_text">正在检查登录状态和激活计划…</string>
+    <string name="keep_alive_start_failed">系统未接受后台常驻服务启动请求；自动任务仍由 WorkManager 按系统规则调度，请检查系统后台设置。</string>
+    <string name="connect_required">请先连接 Codex，再启用后台任务</string>
+    <string name="device_login">请在浏览器中完成登录\n验证码：%1$s</string>
+    <string name="busy_status">○ %1$s</string>
+    <string name="connection_failed">连接失败：%1$s</string>
+</resources>
