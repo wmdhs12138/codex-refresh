@@ -1,4 +1,4 @@
-# Codex Refresh
+# <img src="artwork/icon/codex-flash-adaptive-preview.png" width="44" align="top" alt="应用图标"> Codex Refresh
 
 [![CI](https://github.com/wmdhs12138/codex-refresh/actions/workflows/ci.yml/badge.svg)](https://github.com/wmdhs12138/codex-refresh/actions/workflows/ci.yml)
 
