@@ -106,6 +106,10 @@ app/src/main/java/com/codexrefresh/app/
 
 [codex-refresh-pi](https://github.com/wmdhs12138/codex-refresh-pi)：在 Termux 中通过 Pi Coding Agent 实现同类窗口调度的 Python 版本。
 
+## 致谢
+
+- [Pi Coding Agent](https://github.com/earendil-works/pi)（MIT，Mario Zechner）：`CodexClient.kt` 的设备码 OAuth 流程与 Codex 用量 / Responses 请求处理参考并移植自其实现，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 ## 免责声明
 
 本项目与 OpenAI、ChatGPT、Codex 官方无隶属关系。使用者应自行遵守相应服务条款，并承担运行自动化请求的风险。
