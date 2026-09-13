@@ -21,4 +21,8 @@
     <string name="device_login">请在浏览器中完成登录\n验证码：%1$s</string>
     <string name="busy_status">○ %1$s</string>
     <string name="connection_failed">连接失败：%1$s</string>
+    <string name="exact_alarm_title">允许夜间准时唤醒？</string>
+    <string name="exact_alarm_message">Android 将这项能力称为“闹钟和提醒”。Codex Refresh 只会在计划激活点静默唤醒后台任务，不响铃、不振动，也不会点亮屏幕。未授权时仍可使用自动激活，但夜间可能延迟。</string>
+    <string name="exact_alarm_later">暂不</string>
+    <string name="exact_alarm_allow">前往授权</string>
 </resources>

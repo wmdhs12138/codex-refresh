@@ -47,6 +47,7 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
                 val updated = store.updateIfCurrent(generation) { current ->
                     current.copy(
                         target = seed.target,
+                        baseTarget = seed.baseTarget,
                         seeded = seed.seeded ?: false,
                         lastResult = seed.reason,
                         attemptStartedAt = null,
@@ -65,6 +66,7 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
                     val updated = store.updateIfCurrent(generation) { current ->
                         current.copy(
                             target = target,
+                            baseTarget = decision.baseTarget ?: current.baseTarget,
                             seeded = decision.seeded ?: current.seeded,
                             lastResult = decision.reason,
                             attemptStartedAt = null,
@@ -105,14 +107,20 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
             val positiveReset = refreshed?.fiveHour
                 ?.takeIf { (it.percent ?: 0.0) > 0.0 }
                 ?.reset
-            val target = if (probe.verified) {
-                AutoPolicy.scheduledSuccess(completion, positiveReset, workSchedule)
-            } else {
-                WorkSchedulePolicy.nextActivation(AutoPolicy.unknown(start), workSchedule)
+            if (probe.verified && refreshed != null) {
+                QuotaResetStore(applicationContext).save(refreshed)
+                AutoKeepAlive.refreshNotification(applicationContext)
             }
+            val baseTarget = if (probe.verified) {
+                AutoPolicy.success(completion, positiveReset)
+            } else {
+                AutoPolicy.unknown(start)
+            }
+            val target = WorkSchedulePolicy.nextActivation(baseTarget, workSchedule)
             val updated = store.updateIfCurrent(generation) { current ->
                 current.copy(
                     target = target,
+                    baseTarget = baseTarget,
                     successes = current.successes + if (probe.verified) 1 else 0,
                     lastResult = if (probe.verified) {
                         "自动成功，挑战匹配"
@@ -141,18 +149,21 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
 
             val now = System.currentTimeMillis() / 1000
             val persistedStart = state.attemptStartedAt
-            val target = when {
-                probeStartedAt != null -> WorkSchedulePolicy.nextActivation(
-                    state.target?.takeIf { it > now } ?: AutoPolicy.unknown(probeStartedAt),
-                    workSchedule,
-                )
+            val baseTarget = when {
+                probeStartedAt != null -> AutoPolicy.unknown(probeStartedAt)
                 persistedStart != null && AutoPolicy.unknown(persistedStart) > now ->
-                    maxOf(state.target ?: 0, AutoPolicy.unknown(persistedStart))
+                    AutoPolicy.unknown(persistedStart)
                 else -> now + 300
+            }
+            val target = when {
+                probeStartedAt != null -> WorkSchedulePolicy.nextActivation(baseTarget, workSchedule)
+                persistedStart != null && baseTarget > now -> maxOf(state.target ?: 0, baseTarget)
+                else -> baseTarget
             }
             val updated = store.updateIfCurrent(generation) { current ->
                 current.copy(
                     target = target,
+                    baseTarget = baseTarget,
                     lastResult = bounded(error),
                     // Keep the durable start only while its uncertainty lease matters.
                     attemptStartedAt = current.attemptStartedAt

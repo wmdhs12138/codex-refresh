@@ -91,6 +91,7 @@ data class ExpressiveHomeState(
     val autoEnabled: Boolean = false,
     val autoSuccesses: Int = 0,
     val autoAttempts: Int = 0,
+    val exactAlarmReady: Boolean = true,
     val schedule: WorkSchedule = WorkSchedule(),
     val workPlan: String = "工作时间优化未启用",
     val contextSummary: String = "等待连接 · 暂无数据",
@@ -117,6 +118,7 @@ data class ExpressiveHomeActions(
     val pickWorkEnd: () -> Unit,
     val toggleContext: () -> Unit,
     val openBackgroundSettings: () -> Unit,
+    val requestExactAlarm: () -> Unit,
 )
 
 @Composable
@@ -620,6 +622,10 @@ private fun AutomationCard(state: ExpressiveHomeState, actions: ExpressiveHomeAc
                 Column {
                     Spacer(Modifier.height(16.dp))
                     NextActivationPanel(state)
+                    if (!state.exactAlarmReady) {
+                        Spacer(Modifier.height(10.dp))
+                        ExactAlarmWarning(actions.requestExactAlarm)
+                    }
                     Spacer(Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -633,6 +639,30 @@ private fun AutomationCard(state: ExpressiveHomeState, actions: ExpressiveHomeAc
                     WorkSchedulePanel(state, actions)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ExactAlarmWarning(onRequest: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 22.dp, topEnd = 10.dp, bottomEnd = 22.dp, bottomStart = 22.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 15.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("夜间可能延迟", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "允许静默准时唤醒，不响铃、不振动",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            TextButton(onClick = onRequest) { Text("允许") }
         }
     }
 }

@@ -19,6 +19,7 @@ const val AUTO_GENERATION = "generation"
 data class AutoState(
     val enabled: Boolean,
     val target: Long?,
+    val baseTarget: Long? = null,
     val attempts: Int,
     val successes: Int,
     val day: String,
@@ -36,6 +37,7 @@ data class AutoDecision(
     val target: Long? = null,
     val reason: String = "",
     val seeded: Boolean? = null,
+    val baseTarget: Long? = null,
 )
 
 enum class ManualReservation { DISABLED, BUSY, RESERVED }
@@ -61,23 +63,29 @@ object AutoPolicy {
         val target = listOfNotNull(fiveAnchor, weeklyGate).maxOrNull()
 
         return when {
-            fiveAnchor != null -> AutoDecision(
-                AutoAction.WAIT,
-                WorkSchedulePolicy.nextActivation(target!! + 10, workSchedule, zone),
-                "首次安全窗口已安排",
-                seeded = true,
-            )
+            fiveAnchor != null -> {
+                val baseTarget = target!! + 10
+                AutoDecision(
+                    AutoAction.WAIT,
+                    WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone),
+                    "首次安全窗口已安排",
+                    seeded = true,
+                    baseTarget = baseTarget,
+                )
+            }
             target != null -> AutoDecision(
                 AutoAction.WAIT,
                 target + 10,
                 "额度窗口仍受限；继续等待首次窗口",
                 seeded = false,
+                baseTarget = target + 10,
             )
             else -> AutoDecision(
                 AutoAction.METADATA_RETRY,
                 now + 300,
                 "等待完整额度信息",
                 seeded = false,
+                baseTarget = now + 300,
             )
         }
     }
@@ -99,10 +107,12 @@ object AutoPolicy {
         }
         if (state.target > now) return AutoDecision(AutoAction.WAIT, state.target)
         if (state.attempts >= 12 || state.successes >= 6) {
+            val baseTarget = midnightPlus(now, zone)
             return AutoDecision(
                 AutoAction.DAILY_LIMIT,
-                WorkSchedulePolicy.nextActivation(midnightPlus(now, zone), workSchedule, zone),
+                WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone),
                 "已达到今日安全上限",
+                baseTarget = baseTarget,
             )
         }
 
@@ -115,16 +125,56 @@ object AutoPolicy {
             },
         )
         if (blockers.isNotEmpty()) {
+            val baseTarget = blockers.max() + 10
             return AutoDecision(
                 AutoAction.WAIT,
-                WorkSchedulePolicy.nextActivation(blockers.max() + 10, workSchedule, zone),
+                WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone),
                 "额度窗口尚未开放",
+                baseTarget = baseTarget,
             )
         }
         if (!complete(five, weekly)) {
-            return AutoDecision(AutoAction.METADATA_RETRY, now + 300, "额度信息不完整")
+            return AutoDecision(
+                AutoAction.METADATA_RETRY,
+                now + 300,
+                "额度信息不完整",
+                baseTarget = now + 300,
+            )
         }
         return AutoDecision(AutoAction.ATTEMPT, now, "调度已到期")
+    }
+
+    /**
+     * Returns the reversible, pre-work-schedule boundary. New states persist
+     * it directly; quota metadata safely migrates states written by v0.3.4.
+     */
+    fun scheduleBase(
+        state: AutoState,
+        now: Long,
+        five: Quota?,
+        weekly: Quota?,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Long {
+        val dailyGate = midnightPlus(now, zone).takeIf {
+            state.attempts >= 12 || state.successes >= 6
+        }
+        val persistedBase = state.baseTarget?.let { maxOf(it, now) }
+        val fiveAnchor = five?.reset?.takeIf { five.percent != null && it > now }?.plus(10)
+        val weeklyGate = weekly?.reset?.takeIf {
+            weekly.percent != null && weekly.percent >= 100.0 && it > now
+        }?.plus(10)
+        val uncertaintyGate = state.attemptStartedAt
+            ?.let(::unknown)
+            ?.takeIf { it > now }
+        return listOfNotNull(
+            dailyGate,
+            persistedBase,
+            fiveAnchor,
+            weeklyGate,
+            uncertaintyGate,
+        )
+            .maxOrNull()
+            ?: maxOf(state.target ?: now, now)
     }
 
     private fun complete(five: Quota?, weekly: Quota?): Boolean =
@@ -146,17 +196,6 @@ object AutoPolicy {
         val serverAnchor = positiveReset?.takeIf { it > completion }?.plus(10)
         return serverAnchor?.let { minOf(it, localAnchor) } ?: localAnchor
     }
-
-    fun scheduledSuccess(
-        completion: Long,
-        positiveReset: Long?,
-        workSchedule: WorkSchedule,
-        zone: ZoneId = ZoneId.systemDefault(),
-    ): Long = WorkSchedulePolicy.nextActivation(
-        success(completion, positiveReset),
-        workSchedule,
-        zone,
-    )
 
     fun localDay(now: Long, zone: ZoneId = ZoneId.systemDefault()): String =
         Instant.ofEpochSecond(now).atZone(zone).toLocalDate().toString()
@@ -221,6 +260,7 @@ class AutoStore(context: Context) {
             }
             val next = current.copy(
                 target = AutoPolicy.unknown(start),
+                baseTarget = AutoPolicy.unknown(start),
                 attempts = current.attempts + 1,
                 lastResult = "自动尝试进行中",
                 attemptStartedAt = start,
@@ -241,8 +281,10 @@ class AutoStore(context: Context) {
             return@synchronized (ManualReservation.BUSY to current)
         }
         val leaseTarget = AutoPolicy.unknown(start)
+        val baseTarget = maxOf(current.baseTarget ?: 0L, leaseTarget)
         val next = current.copy(
             target = maxOf(current.target ?: leaseTarget, leaseTarget),
+            baseTarget = baseTarget,
             lastResult = "手动请求进行中；自动任务已暂缓",
             attemptStartedAt = start,
         )
@@ -256,7 +298,12 @@ class AutoStore(context: Context) {
         }
 
     /** Enabling creates a fresh generation while preserving today's guards. */
-    fun enable(target: Long?, seeded: Boolean, status: String): AutoState =
+    fun enable(
+        target: Long?,
+        seeded: Boolean,
+        status: String,
+        baseTarget: Long? = target,
+    ): AutoState =
         synchronized(LOCK) {
             val current = readUnlocked()
             val now = System.currentTimeMillis() / 1000
@@ -264,6 +311,11 @@ class AutoStore(context: Context) {
             val next = current.copy(
                 enabled = true,
                 target = AutoPolicy.targetWithUncertaintyLease(target, retainedAttempt, now),
+                baseTarget = AutoPolicy.targetWithUncertaintyLease(
+                    baseTarget,
+                    retainedAttempt,
+                    now,
+                ),
                 lastResult = status,
                 generation = current.generation + 1,
                 seeded = seeded,
@@ -280,6 +332,7 @@ class AutoStore(context: Context) {
         val next = current.copy(
             enabled = false,
             target = null,
+            baseTarget = null,
             lastResult = status ?: current.lastResult,
             generation = current.generation + 1,
             seeded = false,
@@ -301,6 +354,7 @@ class AutoStore(context: Context) {
             val next = current.copy(
                 enabled = false,
                 target = null,
+                baseTarget = null,
                 lastResult = status,
                 generation = current.generation + 1,
                 seeded = false,
@@ -311,11 +365,16 @@ class AutoStore(context: Context) {
         }
 
     /** Replaces a pending activation after the user changes work-hour preferences. */
-    fun reschedule(target: Long, status: String): AutoState = synchronized(LOCK) {
+    fun reschedule(
+        target: Long,
+        status: String,
+        baseTarget: Long = target,
+    ): AutoState = synchronized(LOCK) {
         val current = readUnlocked()
         require(current.enabled) { "自动任务未启用" }
         val next = current.copy(
             target = target,
+            baseTarget = baseTarget,
             generation = current.generation + 1,
             lastResult = status,
         )
@@ -330,6 +389,7 @@ class AutoStore(context: Context) {
         return AutoState(
             enabled = preferences.getBoolean("enabled", false),
             target = preferences.getLong("target", -1).takeIf { it >= 0 },
+            baseTarget = preferences.getLong("base_target", -1).takeIf { it >= 0 },
             attempts = if (sameDay) preferences.getInt("attempts", 0) else 0,
             successes = if (sameDay) preferences.getInt("successes", 0) else 0,
             day = day,
@@ -350,6 +410,7 @@ class AutoStore(context: Context) {
         val editor = preferences.edit()
             .putBoolean("enabled", state.enabled)
             .putLong("target", state.target ?: -1)
+            .putLong("base_target", state.baseTarget ?: -1)
             .putInt("attempts", state.attempts)
             .putInt("successes", state.successes)
             .putString("day", state.day)
@@ -396,6 +457,9 @@ fun scheduleAuto(
     }
     WorkManager.getInstance(context)
         .enqueueUniqueWork(AUTO_WORK, policy, autoRequest(target, generation))
+    // AlarmManager is a reliability boost. A vendor rejection must never take
+    // down the durable WorkManager fallback.
+    runCatching { AutoAlarm.schedule(context, target, generation) }
 }
 
 /**
@@ -406,8 +470,11 @@ fun scheduleAuto(
 fun ensureAutoScheduled(context: Context, target: Long, generation: Long) {
     WorkManager.getInstance(context)
         .enqueueUniqueWork(AUTO_WORK, ExistingWorkPolicy.KEEP, autoRequest(target, generation))
+    runCatching { AutoAlarm.schedule(context, target, generation) }
 }
 
 fun cancelAuto(context: Context) {
     WorkManager.getInstance(context).cancelUniqueWork(AUTO_WORK)
+    WorkManager.getInstance(context).cancelUniqueWork(AUTO_WAKE_WORK)
+    AutoAlarm.cancel(context)
 }

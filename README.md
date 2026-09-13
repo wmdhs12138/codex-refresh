@@ -14,15 +14,18 @@
 - **5 小时窗口倒计时**：展示最近一次额度刷新取得的服务器重置时间，仅在前台每秒重算，不做后台轮询
 - **5 小时 / 7 天剩余额度**：服务端“已使用百分比”换算为剩余百分比，数字与进度条都表示剩余容量
 - **自动激活**：到点由 WorkManager 发送一个轻量挑战请求启动新窗口；窗口活跃、额度耗尽或结果未知时安全跳过，不会重复发送
+- **静默准时唤醒**：Android 12+ 可由用户授予“闹钟和提醒”权限，在夜间 Doze 中按计划唤醒任务；不响铃、不振动、不亮屏，未授权时自动退化为省电兼容调度
 - **按上班时间优化激活点**：默认 08:30–17:30，推荐点为 05:30 / 10:30 / 15:30，让上班时段接触三个额度窗口；支持跨午夜班次
 - **24 小时 Day Rail**：今天已过去的部分更粗更实；自动计划点、下一次激活与真实成功各有明确权重
-- **常驻通知**：显示 `5小时 17:30 重置 · 7天 9月15日 12:00 重置`，只联动主界面最近一次刷新，不额外发起网络请求
+- **常驻通知**：显示 `5小时 17:30 重置 · 7天 9月15日 12:00 重置`，同步最近一次已取得的 reset（包括自动成功后的既有刷新），不会为通知额外发起网络请求
 - **手动备用卡片**：重新读取额度、手动发送激活请求、设备码重新登录等异常恢复操作
 - **设备码 OAuth 登录**：无需密码；Token 由 Android Keystore 加密存储，不写日志
 
 ## 安装
 
 从 [Releases](https://github.com/wmdhs12138/codex-refresh/releases) 下载 APK 侧载安装（最低 Android 8.0），也可以自行构建。
+
+> v0.3.5 是首个使用长期固定 release key 签名的版本。若设备上安装的是 v0.3.4 或更早的 debug 签名包，需要先卸载旧包再安装一次；此后的正式版本可以直接覆盖升级。卸载会清除本机登录状态。
 
 首次使用：
 
@@ -33,6 +36,7 @@
 自动激活依赖前台常驻服务与 WorkManager 后台任务。为保证长期运行，建议：
 
 - 允许通知（Android 13+ 需手动授予）
+- 允许“闹钟和提醒”（Android 12+，用于夜间静默准时唤醒；不会产生闹钟声）
 - 允许应用后台运行 / 自启动（视厂商系统而定）
 - 在电池设置中取消对该应用的电池优化
 
@@ -65,6 +69,8 @@
 
 APK 产物：`app/build/outputs/apk/debug/app-debug.apk`。
 
+正式发布包使用环境变量注入签名材料，配置与证书指纹见 [发布签名说明](docs/RELEASE_SIGNING.md)。
+
 ### 在 Termux / ARM 设备上构建
 
 Maven 分发的 aapt2 仅提供 x86_64 版本，ARM 设备需要在用户级 `~/.gradle/gradle.properties` 指向本机可执行的 aapt2（Android SDK build-tools 已提供 aarch64 版本）：
@@ -84,6 +90,7 @@ app/src/main/java/com/codexrefresh/app/
 ├── CodexClient.kt           # 设备码 OAuth、WHAM 额度、Responses SSE 挑战、Keystore TokenStore
 ├── AutoScheduler.kt         # 调度策略：目标计算、租约、安全门与每日上限
 ├── AutoWorker.kt            # WorkManager 唯一网络执行者
+├── AutoAlarm.kt             # Doze 下的静默唤醒与精确/近似调度降级
 ├── AutoKeepAliveService.kt  # 用户 opt-in 的前台常驻 supervisor
 ├── AutoBootReceiver.kt      # 开机 / 应用更新后恢复调度
 ├── WorkSchedule.kt          # 按上班时间优化激活点
@@ -93,13 +100,13 @@ app/src/main/java/com/codexrefresh/app/
 └── SseParser.kt             # SSE 增量解析
 ```
 
-8 个 JVM 测试类覆盖调度策略、租约与并发协调、额度换算、SSE 解析、时间轴呈现与工作时段推荐，随 `testDebugUnitTest` 运行。
+9 个 JVM 测试类覆盖唤醒模式、调度策略、租约与并发协调、额度换算、SSE 解析、时间轴呈现与工作时段推荐，随 `testDebugUnitTest` 运行。
 
 ## 已知限制
 
 - 这是个人自用的侧载应用；前台服务使用 Android `specialUse` 类型，若要公开上架，必须重新评估 Google Play 及各分发渠道对后台常驻与前台服务用途的政策要求
 - 依赖 ChatGPT 后端接口（WHAM 用量 / Codex Responses），并非稳定公开 API，不能保证兼容性
-- 无法绕过系统 force-stop 或厂商后台限制；WorkManager 不是精确闹钟，Doze、电量与网络条件可能造成执行延迟
+- 无法绕过系统 force-stop 或厂商后台限制；未授予“闹钟和提醒”权限时会退化为近似唤醒，Doze、电量与网络条件仍可能造成执行延迟
 - OpenAI 未提供窗口 reset event / window ID，本地窗口代次与部分重置判断为程序推断
 
 ## 姊妹项目

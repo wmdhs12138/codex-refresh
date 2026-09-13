@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         openBackgroundSettings = ::openBackgroundSettings,
+                        requestExactAlarm = ::explainExactAlarmAccess,
                     ),
                 )
             }
@@ -302,14 +303,15 @@ class MainActivity : ComponentActivity() {
                         val positiveReset = postUsage?.fiveHour
                             ?.takeIf { (it.percent ?: 0.0) > 0.0 }
                             ?.reset
-                        val target = AutoPolicy.scheduledSuccess(
-                            completion,
-                            positiveReset,
+                        val baseTarget = AutoPolicy.success(completion, positiveReset)
+                        val target = WorkSchedulePolicy.nextActivation(
+                            baseTarget,
                             workScheduleStore.read(),
                         )
                         val updated = autoStore.updateIfCurrent(expectedGeneration) { auto ->
                             auto.copy(
                                 target = target,
+                                baseTarget = baseTarget,
                                 seeded = true,
                                 lastResult = "手动成功，已推迟自动任务",
                                 attemptStartedAt = null,
@@ -373,6 +375,7 @@ class MainActivity : ComponentActivity() {
             target = decision.target,
             seeded = decision.seeded ?: false,
             status = "已启用；${decision.reason}",
+            baseTarget = decision.baseTarget,
         )
         enabledState.target?.let { scheduleAuto(this, it, enabledState.generation) }
         autoRestoreAttempted = true
@@ -415,9 +418,18 @@ class MainActivity : ComponentActivity() {
         val state = autoStore.read()
         if (state.enabled && state.seeded && state.target != null) {
             val now = System.currentTimeMillis() / 1000
-            val safeTarget = maxOf(state.target, now)
-            val target = WorkSchedulePolicy.nextActivation(safeTarget, schedule)
-            val updated = autoStore.reschedule(target, "上班时间计划已更新")
+            val baseTarget = AutoPolicy.scheduleBase(
+                state = state,
+                now = now,
+                five = latestUsage?.fiveHour,
+                weekly = latestUsage?.weekly,
+            )
+            val target = WorkSchedulePolicy.nextActivation(baseTarget, schedule)
+            val updated = autoStore.reschedule(
+                target = target,
+                status = "上班时间计划已更新",
+                baseTarget = baseTarget,
+            )
             scheduleAuto(this, target, updated.generation)
         }
         renderAuto()
@@ -437,6 +449,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        rearmAutoAlarm()
         restoreVisibleAutoServiceIfNeeded()
         renderAuto()
         if (tokens != null && !busy.get()) refresh()
@@ -546,6 +559,41 @@ class MainActivity : ComponentActivity() {
                 Uri.parse("package:$packageName"),
             ),
         )
+    }
+
+    private fun explainExactAlarmAccess() {
+        if (AutoAlarm.canScheduleExact(this)) {
+            updateActionStatus("夜间准时唤醒已可用", StatusTone.SUCCESS)
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.exact_alarm_title)
+            .setMessage(R.string.exact_alarm_message)
+            .setNegativeButton(R.string.exact_alarm_later, null)
+            .setPositiveButton(R.string.exact_alarm_allow) { _, _ -> openExactAlarmSettings() }
+            .show()
+    }
+
+    private fun openExactAlarmSettings() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S) return
+        runCatching {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        }.onFailure {
+            updateStatus("无法打开准时唤醒设置，请从系统应用设置中授权", StatusTone.ERROR)
+        }
+    }
+
+    private fun rearmAutoAlarm() {
+        if (!::autoStore.isInitialized) return
+        val state = autoStore.read()
+        if (state.enabled && state.target != null) {
+            runCatching { AutoAlarm.schedule(this, state.target, state.generation) }
+        }
     }
 
     private fun setBusy(message: String) {
@@ -672,6 +720,7 @@ class MainActivity : ComponentActivity() {
             autoEnabled = auto.enabled,
             autoSuccesses = auto.successes,
             autoAttempts = auto.attempts,
+            exactAlarmReady = AutoAlarm.canScheduleExact(this),
             schedule = schedule,
             workPlan = TimelinePresentation.workPlanText(schedule),
         )

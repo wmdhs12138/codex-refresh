@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -18,7 +21,7 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      - name: Test, lint and build
+      - name: Test, lint and build debug
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
 
       - name: Upload debug APK
@@ -26,3 +29,31 @@ jobs:
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Restore release signing key
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.CODEX_RELEASE_KEYSTORE_BASE64 }}
+          CODEX_RELEASE_STORE_FILE: ${{ runner.temp }}/codex-refresh-release.keystore
+        run: |
+          test -n "$RELEASE_KEYSTORE_BASE64"
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$CODEX_RELEASE_STORE_FILE"
+          chmod 600 "$CODEX_RELEASE_STORE_FILE"
+
+      - name: Build signed release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          CODEX_RELEASE_STORE_FILE: ${{ runner.temp }}/codex-refresh-release.keystore
+          CODEX_RELEASE_STORE_PASSWORD: ${{ secrets.CODEX_RELEASE_STORE_PASSWORD }}
+          CODEX_RELEASE_KEY_PASSWORD: ${{ secrets.CODEX_RELEASE_KEY_PASSWORD }}
+          CODEX_RELEASE_KEY_ALIAS: codex-refresh-release
+        run: ./gradlew --no-daemon assembleRelease bundleRelease
+
+      - name: Upload signed release artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-refresh-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab

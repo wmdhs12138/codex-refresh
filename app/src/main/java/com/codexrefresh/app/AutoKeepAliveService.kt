@@ -93,7 +93,9 @@ class AutoKeepAliveService : Service() {
             now = System.currentTimeMillis() / 1000,
         )
         val current = if (state.target == null) {
-            autoStore.updateIfCurrent(state.generation) { it.copy(target = decision.target) }
+            autoStore.updateIfCurrent(state.generation) {
+                it.copy(target = decision.target, baseTarget = decision.target)
+            }
                 ?: autoStore.read()
         } else {
             state

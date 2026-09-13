@@ -7,15 +7,27 @@ import android.content.Intent
 /** Requests restoration only for a previously enabled schedule. */
 class AutoBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
-            intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
+        val action = intent.action
+        if (
+            action != Intent.ACTION_BOOT_COMPLETED &&
+            action != Intent.ACTION_MY_PACKAGE_REPLACED &&
+            action != Intent.ACTION_TIME_CHANGED &&
+            action != Intent.ACTION_TIMEZONE_CHANGED
         ) return
 
-        // Keep the receiver within a fast preference read. Keystore validation,
-        // target repair, and WorkManager initialization happen after the FGS
-        // has entered the foreground.
+        // Keep recovery network-free. It only restores the persisted alarm,
+        // durable worker, and (after boot/update) the user-enabled supervisor.
         val enabled = context.getSharedPreferences("auto_scheduler", Context.MODE_PRIVATE)
             .getBoolean("enabled", false)
-        if (enabled) runCatching { AutoKeepAlive.start(context) }
+        if (!enabled) return
+
+        val state = AutoStore(context).read()
+        state.target?.let { target ->
+            runCatching { AutoAlarm.schedule(context, target, state.generation) }
+            runCatching { ensureAutoScheduled(context, target, state.generation) }
+        }
+        if (action == Intent.ACTION_BOOT_COMPLETED || action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            runCatching { AutoKeepAlive.start(context) }
+        }
     }
 }

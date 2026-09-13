@@ -204,6 +204,60 @@ class AutoPolicyTest {
     }
 
     @Test
+    fun workScheduleProjectionCanBeReversedToQuotaBoundary() {
+        val zone = ZoneId.of("Asia/Shanghai")
+        val current = ZonedDateTime.of(2026, 9, 12, 13, 0, 0, 0, zone).toEpochSecond()
+        val reset = ZonedDateTime.of(2026, 9, 12, 14, 2, 50, 0, zone).toEpochSecond()
+        val baseTarget = reset + 10
+        val workSchedule = WorkSchedule(
+            enabled = true,
+            startMinute = 12 * 60 + 15,
+            endMinute = 21 * 60 + 15,
+        )
+        val projected = WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone)
+        assertEquals(
+            ZonedDateTime.of(2026, 9, 12, 14, 15, 0, 0, zone).toEpochSecond(),
+            projected,
+        )
+
+        val projectedState = state(target = projected).copy(baseTarget = baseTarget)
+        val restoredBase = AutoPolicy.scheduleBase(
+            projectedState,
+            current,
+            quota(40.0, reset),
+            quota(40.0, current + 86_400),
+            zone,
+        )
+        val restored = WorkSchedulePolicy.nextActivation(
+            restoredBase,
+            workSchedule.copy(enabled = false),
+            zone,
+        )
+
+        assertEquals(baseTarget, restored)
+    }
+
+    @Test
+    fun oldProjectedStateUsesQuotaBoundaryWhenMigrated() {
+        val zone = ZoneId.of("Asia/Shanghai")
+        val current = ZonedDateTime.of(2026, 9, 12, 13, 0, 0, 0, zone).toEpochSecond()
+        val reset = ZonedDateTime.of(2026, 9, 12, 14, 2, 50, 0, zone).toEpochSecond()
+        val oldProjected = ZonedDateTime.of(2026, 9, 12, 14, 15, 0, 0, zone).toEpochSecond()
+        val oldState = state(target = oldProjected).copy(baseTarget = null)
+
+        assertEquals(
+            reset + 10,
+            AutoPolicy.scheduleBase(
+                oldState,
+                current,
+                quota(40.0, reset),
+                quota(40.0, current + 86_400),
+                zone,
+            ),
+        )
+    }
+
+    @Test
     fun localDayAndMidnightAreCalendarBasedAcrossDstZone() {
         val zone = ZoneId.of("America/New_York")
         val input = ZonedDateTime.of(2024, 11, 2, 23, 45, 0, 0, zone).toEpochSecond()
