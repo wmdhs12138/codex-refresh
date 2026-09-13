@@ -51,12 +51,39 @@ object QuotaPresentation {
         return "$day ${reset.format(DateTimeFormatter.ofPattern("HH:mm"))} 重置"
     }
 
+    fun fiveHourResetLabel(epochSecond: Long?, now: Long, zone: ZoneId): String = when {
+        epochSecond == null || epochSecond <= 0L -> "窗口状态未知"
+        epochSecond <= now -> "窗口待激活"
+        else -> resetLabel(epochSecond, now, zone)
+    }
+
     fun notificationText(
         snapshot: QuotaResetSnapshot,
         now: Long,
         zone: ZoneId,
-    ): String = "5小时：${notificationReset(snapshot.fiveHourReset, now, zone, compactToday = true)}" +
+        evidence: FiveHourEvidence? = null,
+    ): String = "5小时：${notificationFiveHourReset(snapshot.fiveHourReset, now, zone, evidence)}" +
         "｜7天：${notificationReset(snapshot.sevenDayReset, now, zone, compactToday = false)}"
+
+    private fun notificationFiveHourReset(
+        epochSecond: Long?,
+        now: Long,
+        zone: ZoneId,
+        evidence: FiveHourEvidence?,
+    ): String = when {
+        evidence?.kind == FiveHourEvidenceKind.ACTIVE -> notificationReset(
+            evidence.resetAt,
+            now,
+            zone,
+            compactToday = true,
+        )
+        evidence?.kind == FiveHourEvidenceKind.STANDBY ||
+            evidence?.kind == FiveHourEvidenceKind.AMBIGUOUS -> "等待激活"
+        evidence?.kind == FiveHourEvidenceKind.UNKNOWN -> "状态未知"
+        epochSecond == null || epochSecond <= 0L -> "状态未知"
+        epochSecond <= now -> "等待激活"
+        else -> notificationReset(epochSecond, now, zone, compactToday = true)
+    }
 
     private fun notificationReset(
         epochSecond: Long?,

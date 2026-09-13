@@ -152,10 +152,18 @@ class AutoKeepAliveService : Service() {
         getString(R.string.keep_alive_restoring_text),
     )
 
-    private fun notification(): Notification = buildNotification(
-        title = getString(R.string.keep_alive_title),
-        text = KeepAlivePresentation.text(quotaResetStore.read()),
-    )
+    private fun notification(): Notification {
+        val now = System.currentTimeMillis() / 1000
+        val observations = QuotaDiagnosticsStore(applicationContext).read()
+        return buildNotification(
+            title = getString(R.string.keep_alive_title),
+            text = KeepAlivePresentation.text(
+                snapshot = quotaResetStore.read(),
+                now = now,
+                observations = observations,
+            ),
+        )
+    }
 
     private fun buildNotification(
         title: String,
@@ -197,7 +205,13 @@ object KeepAlivePresentation {
         snapshot: QuotaResetSnapshot,
         now: Long = System.currentTimeMillis() / 1000,
         zone: ZoneId = ZoneId.systemDefault(),
-    ): String = QuotaPresentation.notificationText(snapshot, now, zone)
+        observations: List<QuotaObservation> = emptyList(),
+    ): String = QuotaPresentation.notificationText(
+        snapshot,
+        now,
+        zone,
+        FiveHourEvidencePolicy.evaluate(observations, now).takeIf { observations.isNotEmpty() },
+    )
 
     fun notificationStatus(notificationsVisible: Boolean): String = if (notificationsVisible) {
         "常驻通知：已允许显示"
@@ -232,7 +246,7 @@ object AutoKeepAlive {
         )
     }.isSuccess
 
-    /** Rebuilds the foreground notification from the last UI-fetched quota snapshot. */
+    /** Rebuilds the foreground notification from the latest persisted quota snapshot. */
     fun refreshNotification(context: Context): Boolean {
         if (!AutoStore(context.applicationContext).read().enabled) return false
         return runCatching {

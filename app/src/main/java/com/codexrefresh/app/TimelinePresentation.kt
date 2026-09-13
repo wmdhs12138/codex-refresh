@@ -2,45 +2,18 @@ package com.codexrefresh.app
 
 import java.time.Instant
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.time.format.FormatStyle
-import java.util.Locale
-
-/** Presentation-only projections; no scheduler or network decisions are made here. */
-data class ActivationPoint(val epochSecond: Long, val confirmed: Boolean, val text: String)
-
-data class TimelineResult(val points: List<ActivationPoint>, val fallback: String? = null)
 
 object TimelinePresentation {
-    private const val DAY_SECONDS = 24 * 60 * 60L
-    private val formatter = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
-
-    fun countdown(reset: Long?, now: Long): String = when {
-        reset == null || reset <= 0L -> "—"
-        reset <= now -> "等待重置"
-        else -> duration(reset - now)
+    fun windowPhase(reset: Long?, now: Long): FiveHourWindowPhase = when {
+        reset == null || reset <= 0L -> FiveHourWindowPhase.UNKNOWN
+        reset > now -> FiveHourWindowPhase.ACTIVE
+        else -> FiveHourWindowPhase.READY
     }
 
-    fun formatLocal(epochSecond: Long, zone: ZoneId): String {
-        val dateTime = Instant.ofEpochSecond(epochSecond).atZone(zone)
-        val day = dateTime.format(DateTimeFormatter.ofPattern("M月d日 E", Locale.SIMPLIFIED_CHINESE))
-        return "$day ${dateTime.hour.toString().padStart(2, '0')}:${dateTime.minute.toString().padStart(2, '0')}"
-    }
-
-    /** The anchor is the only confirmed point. Projections are bounded to the next 24h. */
-    fun futureTimeline(anchor: Long?, now: Long, zone: ZoneId): TimelineResult {
-        if (anchor == null || anchor <= 0L) return TimelineResult(emptyList(), "缺少可信的服务器五小时锚点")
-        if (anchor < now) return TimelineResult(emptyList(), "服务器锚点已过期，请刷新额度")
-        val end = now + DAY_SECONDS
-        val result = mutableListOf<ActivationPoint>()
-        var point = anchor
-        var first = true
-        while (point <= end) {
-            result += ActivationPoint(point, first, formatLocal(point, zone))
-            first = false
-            point += AUTO_LEASE
-        }
-        return TimelineResult(result)
+    fun countdown(reset: Long?, now: Long): String = when (windowPhase(reset, now)) {
+        FiveHourWindowPhase.UNKNOWN -> "—"
+        FiveHourWindowPhase.READY -> "等待激活"
+        FiveHourWindowPhase.ACTIVE -> duration(reset!! - now)
     }
 
     fun dayTimeline(
@@ -49,6 +22,7 @@ object TimelinePresentation {
         zone: ZoneId,
         schedule: WorkSchedule,
         autoEnabled: Boolean,
+        windowPhase: FiveHourWindowPhase = windowPhase(anchor, now),
         nextActivationEpoch: Long? = null,
         completedActivations: List<Long>,
     ): DayTimelineState {
@@ -64,11 +38,10 @@ object TimelinePresentation {
         } else {
             emptyList()
         }
-        val quotaEpochs = if (anchor != null && anchor >= now) {
-            projectedEpochs(anchor, dayStart, dayEnd)
-        } else {
-            emptyList()
-        }
+        // A reset timestamp proves only the current window boundary. Never
+        // manufacture later windows by adding five-hour intervals: the next
+        // window does not exist until another Codex request activates it.
+        val confirmedWindowEnd = anchor?.takeIf { it > now && it in dayStart until dayEnd }
         val completedToday = completedActivations.filter { it in dayStart until dayEnd }
 
         val completedMarkers = completedToday.map {
@@ -85,14 +58,11 @@ object TimelinePresentation {
                     }
                 }
         } else {
-            quotaEpochs
-                .filter { it in dayStart until dayEnd }
-                .map { epoch ->
-                    TimelineMarker(
-                        minuteOfDay(epoch, zone),
-                        if (epoch == anchor) TimelineMarkerKind.CONFIRMED else TimelineMarkerKind.ESTIMATED,
-                    )
-                }
+            listOfNotNull(
+                confirmedWindowEnd?.let {
+                    TimelineMarker(minuteOfDay(it, zone), TimelineMarkerKind.CONFIRMED)
+                },
+            )
         }
         val nextMarker = nextActivationEpoch
             ?.takeIf { autoEnabled && it in dayStart until dayEnd }
@@ -109,11 +79,17 @@ object TimelinePresentation {
         val localNow = Instant.ofEpochSecond(now).atZone(zone)
 
         val description = buildString {
-            append(if (autoEnabled) "今天二十四小时激活计划。" else "今天二十四小时额度窗口。")
+            append(if (autoEnabled) "今天二十四小时激活计划。" else "今天二十四小时窗口状态。")
             if (workPlanEnabled) {
                 append("工作时间 ${WorkSchedulePolicy.formatMinute(schedule.startMinute)} 到 ${WorkSchedulePolicy.formatMinute(schedule.endMinute)}。")
             }
-            append("待激活 ${baseMarkers.size} 个，")
+            if (workPlanEnabled) {
+                append("计划激活 ${baseMarkers.size} 个，")
+            } else if (confirmedWindowEnd != null) {
+                append("当前窗口正在倒计时，")
+            } else if (windowPhase == FiveHourWindowPhase.READY) {
+                append("当前窗口等待激活，")
+            }
             append("已自动激活 ${completedToday.size} 个。")
         }
         return DayTimelineState(
@@ -134,19 +110,6 @@ object TimelinePresentation {
         val points = WorkSchedulePolicy.activationMinutes(schedule)
             .joinToString(" · ") { WorkSchedulePolicy.formatMinute(it) }
         return "推荐激活 $points"
-    }
-
-    private fun projectedEpochs(anchor: Long?, dayStart: Long, dayEnd: Long): List<Long> {
-        if (anchor == null || anchor <= 0L) return emptyList()
-        var first = anchor
-        while (first - AUTO_LEASE >= dayStart - AUTO_FIVE_HOURS) first -= AUTO_LEASE
-        val result = mutableListOf<Long>()
-        var point = first
-        while (point < dayEnd) {
-            if (point >= dayStart - AUTO_FIVE_HOURS) result += point
-            point += AUTO_LEASE
-        }
-        return result
     }
 
     private fun minuteOfDay(epoch: Long, zone: ZoneId): Float {

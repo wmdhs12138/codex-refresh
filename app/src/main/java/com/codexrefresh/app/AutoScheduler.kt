@@ -55,8 +55,12 @@ object AutoPolicy {
         weekly: Quota?,
         workSchedule: WorkSchedule = WorkSchedule(),
         zone: ZoneId = ZoneId.systemDefault(),
+        evidence: FiveHourEvidenceKind? = null,
     ): AutoDecision {
-        val fiveAnchor = five?.reset?.takeIf { five.percent != null && it > now }
+        val fiveAnchor = five?.reset?.takeIf {
+            five.percent != null && it > now &&
+                (evidence == null || evidence == FiveHourEvidenceKind.ACTIVE)
+        }
         val weeklyGate = weekly?.reset?.takeIf {
             weekly.percent != null && weekly.percent >= 100.0 && it > now
         }
@@ -69,6 +73,23 @@ object AutoPolicy {
                     AutoAction.WAIT,
                     WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone),
                     "首次安全窗口已安排",
+                    seeded = true,
+                    baseTarget = baseTarget,
+                )
+            }
+            evidence == FiveHourEvidenceKind.AMBIGUOUS -> AutoDecision(
+                AutoAction.METADATA_RETRY,
+                now + WINDOW_CONFIRMATION_DELAY_SECONDS,
+                WINDOW_CONFIRMATION_REASON,
+                seeded = false,
+                baseTarget = now + WINDOW_CONFIRMATION_DELAY_SECONDS,
+            )
+            evidence == FiveHourEvidenceKind.STANDBY && complete(five, weekly) -> {
+                val baseTarget = maxOf(now, weeklyGate ?: now) + 10
+                AutoDecision(
+                    AutoAction.WAIT,
+                    WorkSchedulePolicy.nextActivation(baseTarget, workSchedule, zone),
+                    "待命窗口已安排激活",
                     seeded = true,
                     baseTarget = baseTarget,
                 )
@@ -159,7 +180,9 @@ object AutoPolicy {
             state.attempts >= 12 || state.successes >= 6
         }
         val persistedBase = state.baseTarget?.let { maxOf(it, now) }
-        val fiveAnchor = five?.reset?.takeIf { five.percent != null && it > now }?.plus(10)
+        val fiveAnchor = five?.reset?.takeIf {
+            five.percent != null && five.percent > 0.0 && it > now
+        }?.plus(10)
         val weeklyGate = weekly?.reset?.takeIf {
             weekly.percent != null && weekly.percent >= 100.0 && it > now
         }?.plus(10)

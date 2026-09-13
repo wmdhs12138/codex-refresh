@@ -23,7 +23,13 @@ const val CODEX_CONTEXT_REFERENCE = 272_000
 
 data class DeviceCode(val id: String, val code: String, val interval: Long)
 data class Tokens(val access: String, val refresh: String, val expiresAt: Long)
-data class Quota(val percent: Double?, val reset: Long?)
+data class Quota(
+    val percent: Double?,
+    val reset: Long?,
+    val percentRaw: String? = percent?.toString(),
+    val resetAfterSeconds: Long? = null,
+    val windowSeconds: Long? = null,
+)
 data class Usage(val fiveHour: Quota, val weekly: Quota)
 data class HttpResult(val status: Int, val body: String)
 
@@ -139,7 +145,18 @@ class CodexClient {
         if (account.isNotBlank()) headers["ChatGPT-Account-Id"] = account
         val root = json(request(USAGE, "GET", headers = headers), "读取额度")
         val (five, weekly) = classifyUsageWindows(root.optJSONObject("rate_limit") ?: JSONObject())
-        fun quota(window: JSONObject) = Quota(window.optDouble("used_percent", Double.NaN).takeUnless { it.isNaN() }, window.optLong("reset_at", 0).takeUnless { it == 0L })
+        fun quota(window: JSONObject): Quota {
+            val rawPercent = window.opt("used_percent")
+                ?.takeUnless { it == JSONObject.NULL }
+                ?.toString()
+            return Quota(
+                percent = window.optDouble("used_percent", Double.NaN).takeUnless { it.isNaN() },
+                reset = window.optLong("reset_at", 0).takeUnless { it == 0L },
+                percentRaw = rawPercent,
+                resetAfterSeconds = window.optLong("reset_after_seconds", 0).takeUnless { it == 0L },
+                windowSeconds = window.optLong("limit_window_seconds", 0).takeUnless { it == 0L },
+            )
+        }
         return Usage(quota(five), quota(weekly))
     }
 

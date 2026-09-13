@@ -37,13 +37,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var store: TokenStore
     private lateinit var autoStore: AutoStore
     private lateinit var quotaResetStore: QuotaResetStore
+    private lateinit var quotaDiagnosticsStore: QuotaDiagnosticsStore
     private lateinit var workScheduleStore: WorkScheduleStore
+    private var quotaObservations: List<QuotaObservation> = emptyList()
     private var latestUsage: Usage? = null
     private var deviceCode: String? = null
     private var autoRestoreAttempted = false
     private var lastAutoRestoreAttemptElapsed = 0L
     private var notificationPermissionInFlight = false
     private var keepAliveStartFailed = false
+    @Volatile private var activityStarted = false
+    private val confirmationInFlight = AtomicBoolean(false)
+    private val confirmationGeneration = AtomicLong(0)
+    private var pendingConfirmation: Runnable? = null
     private var expressiveState by mutableStateOf(ExpressiveHomeState())
 
     private val notificationPermissionLauncher = registerForActivityResult(
@@ -74,13 +80,17 @@ class MainActivity : ComponentActivity() {
         store = TokenStore(this)
         autoStore = AutoStore(this)
         quotaResetStore = QuotaResetStore(this)
+        quotaDiagnosticsStore = QuotaDiagnosticsStore(this)
+        quotaObservations = quotaDiagnosticsStore.read()
         workScheduleStore = WorkScheduleStore(this)
         setContent {
             CodexExpressiveTheme {
                 ExpressiveHomeScreen(
                     state = expressiveState,
                     actions = ExpressiveHomeActions(
-                        connect = { if (tokens == null) login() else refresh() },
+                        connect = {
+                            if (tokens == null) login() else refresh(QuotaObservationSource.MANUAL_REFRESH)
+                        },
                         probe = ::probe,
                         copyCode = ::copyDeviceCode,
                         logout = ::confirmLogout,
@@ -95,6 +105,12 @@ class MainActivity : ComponentActivity() {
                                 contextExpanded = !expressiveState.contextExpanded,
                             )
                         },
+                        toggleQuotaDiagnostics = {
+                            expressiveState = expressiveState.copy(
+                                quotaDiagnosticsExpanded = !expressiveState.quotaDiagnosticsExpanded,
+                            )
+                        },
+                        copyQuotaDiagnostics = ::copyQuotaDiagnostics,
                         openBackgroundSettings = ::openBackgroundSettings,
                         requestExactAlarm = ::explainExactAlarmAccess,
                     ),
@@ -112,7 +128,7 @@ class MainActivity : ComponentActivity() {
             renderDisconnected()
         } else {
             expressiveState = expressiveState.copy(logoutVisible = true)
-            refresh()
+            refresh(QuotaObservationSource.APP_OPEN)
         }
         renderAuto()
     }
@@ -147,7 +163,7 @@ class MainActivity : ComponentActivity() {
                     return@execute
                 }
                 deviceCode = null
-                fetchUsageAndRender(operation)
+                fetchUsageAndRender(operation, source = QuotaObservationSource.LOGIN)
             } catch (e: Exception) {
                 updateFor(operation) { fail(e) }
             } finally {
@@ -156,7 +172,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun refresh() {
+    private fun refresh(source: QuotaObservationSource) {
         if (tokens == null) return
         val operation = beginOperation("正在读取真实额度…") ?: return
         expressiveState = expressiveState.copy(logoutVisible = true)
@@ -166,7 +182,7 @@ class MainActivity : ComponentActivity() {
                     ?: error("需要重新登录")
                 if (!isCurrent(operation)) return@execute
                 tokens = fresh
-                fetchUsageAndRender(operation)
+                fetchUsageAndRender(operation, source = source)
             } catch (e: Exception) {
                 updateFor(operation) { fail(e) }
             } finally {
@@ -175,12 +191,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun fetchUsageAndRender(operation: Long, statusMessage: String? = null) {
+    private fun fetchUsageAndRender(
+        operation: Long,
+        statusMessage: String? = null,
+        source: QuotaObservationSource,
+    ) {
         val requestTokens = TokenCoordinator.latest(store, client)
             ?: error("需要重新登录")
         val usage = client.usage(requestTokens)
         tokens = requestTokens
         updateFor(operation) {
+            recordQuotaObservation(source, usage)
             latestUsage = usage
             quotaResetStore.save(usage)
             AutoKeepAlive.refreshNotification(this)
@@ -198,6 +219,7 @@ class MainActivity : ComponentActivity() {
                 probeVisible = true,
             )
             renderTiming()
+            scheduleWindowConfirmationIfNeeded()
         }
     }
 
@@ -291,6 +313,11 @@ class MainActivity : ComponentActivity() {
                         contextAvailable = true,
                     )
                     if (postUsage != null) {
+                        recordQuotaObservation(
+                            QuotaObservationSource.MANUAL_ACTIVATION,
+                            postUsage,
+                            appRequestSent = true,
+                        )
                         latestUsage = postUsage
                         quotaResetStore.save(postUsage)
                         AutoKeepAlive.refreshNotification(this)
@@ -333,6 +360,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     renderAuto()
+                    scheduleWindowConfirmationIfNeeded()
                 }
             } catch (e: Exception) {
                 manualLease?.let { lease ->
@@ -365,11 +393,13 @@ class MainActivity : ComponentActivity() {
             return
         }
         val now = System.currentTimeMillis() / 1000
+        val evidence = FiveHourEvidencePolicy.evaluate(quotaObservations, now)
         val decision = AutoPolicy.enable(
             now,
-            latestUsage?.fiveHour,
+            evidence.schedulingQuota(latestUsage?.fiveHour),
             latestUsage?.weekly,
             workScheduleStore.read(),
+            evidence = evidence.kind,
         )
         val enabledState = autoStore.enable(
             target = decision.target,
@@ -418,10 +448,11 @@ class MainActivity : ComponentActivity() {
         val state = autoStore.read()
         if (state.enabled && state.seeded && state.target != null) {
             val now = System.currentTimeMillis() / 1000
+            val evidence = FiveHourEvidencePolicy.evaluate(quotaObservations, now)
             val baseTarget = AutoPolicy.scheduleBase(
                 state = state,
                 now = now,
-                five = latestUsage?.fiveHour,
+                five = evidence.schedulingQuota(latestUsage?.fiveHour),
                 weekly = latestUsage?.weekly,
             )
             val target = WorkSchedulePolicy.nextActivation(baseTarget, schedule)
@@ -437,11 +468,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        activityStarted = true
         ticker.removeCallbacks(tick)
         ticker.post(tick)
     }
 
     override fun onStop() {
+        activityStarted = false
+        cancelWindowConfirmation()
         ticker.removeCallbacks(tick)
         if (!notificationPermissionInFlight) autoRestoreAttempted = false
         super.onStop()
@@ -452,7 +486,8 @@ class MainActivity : ComponentActivity() {
         rearmAutoAlarm()
         restoreVisibleAutoServiceIfNeeded()
         renderAuto()
-        if (tokens != null && !busy.get()) refresh()
+        quotaObservations = quotaDiagnosticsStore.read()
+        if (tokens != null && !busy.get()) refresh(QuotaObservationSource.APP_OPEN)
     }
 
     private fun restoreVisibleAutoServiceIfNeeded() {
@@ -491,6 +526,8 @@ class MainActivity : ComponentActivity() {
         client.cancelProbe()
         store.clear()
         quotaResetStore.clear()
+        quotaDiagnosticsStore.clear()
+        quotaObservations = emptyList()
         tokens = null
         latestUsage = null
         deviceCode = null
@@ -506,8 +543,97 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun copyQuotaDiagnostics() {
+        val details = QuotaDiagnosticsPresentation.details(
+            quotaObservations,
+            ZoneId.systemDefault(),
+        )
+        if (details.isBlank()) return
+        (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager)
+            .setPrimaryClip(ClipData.newPlainText("Codex 额度诊断", details))
+        updateActionStatus("额度诊断记录已复制", StatusTone.SUCCESS)
+    }
+
+    private fun scheduleWindowConfirmationIfNeeded() {
+        cancelWindowConfirmation()
+        val now = System.currentTimeMillis() / 1000
+        if (
+            !activityStarted ||
+            tokens == null ||
+            FiveHourEvidencePolicy.evaluate(quotaObservations, now).kind !=
+            FiveHourEvidenceKind.AMBIGUOUS
+        ) return
+
+        val generation = confirmationGeneration.incrementAndGet()
+        val task = Runnable {
+            pendingConfirmation = null
+            runWindowConfirmation(generation)
+        }
+        pendingConfirmation = task
+        ticker.postDelayed(task, WINDOW_CONFIRMATION_DELAY_MS)
+    }
+
+    private fun runWindowConfirmation(generation: Long) {
+        if (
+            !activityStarted ||
+            tokens == null ||
+            busy.get() ||
+            generation != confirmationGeneration.get() ||
+            !confirmationInFlight.compareAndSet(false, true)
+        ) return
+
+        executor.execute {
+            var result: Pair<Tokens, Usage>? = null
+            try {
+                val fresh = TokenCoordinator.latest(store, client) ?: return@execute
+                result = fresh to client.usage(fresh)
+            } catch (_: Exception) {
+                // This is a best-effort metadata confirmation; the explicit
+                // refresh action remains available if it fails.
+            } finally {
+                runOnUiThread {
+                    confirmationInFlight.set(false)
+                    val confirmed = result
+                    if (
+                        confirmed != null &&
+                        activityStarted &&
+                        generation == confirmationGeneration.get() &&
+                        tokens != null
+                    ) {
+                        val (fresh, usage) = confirmed
+                        tokens = fresh
+                        recordQuotaObservation(QuotaObservationSource.WINDOW_CONFIRMATION, usage)
+                        latestUsage = usage
+                        quotaResetStore.save(usage)
+                        AutoKeepAlive.refreshNotification(this)
+                        renderTiming()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun cancelWindowConfirmation() {
+        pendingConfirmation?.let(ticker::removeCallbacks)
+        pendingConfirmation = null
+        confirmationGeneration.incrementAndGet()
+    }
+
+    private fun recordQuotaObservation(
+        source: QuotaObservationSource,
+        usage: Usage,
+        appRequestSent: Boolean = false,
+    ) {
+        runCatching {
+            quotaDiagnosticsStore.record(source, usage, appRequestSent)
+        }.onSuccess {
+            quotaObservations = it
+        }
+    }
+
     private fun beginOperation(message: String): Long? {
         if (!busy.compareAndSet(false, true)) return null
+        cancelWindowConfirmation()
         cancelled = false
         val operation = operationGeneration.incrementAndGet()
         setBusy(message)
@@ -677,7 +803,24 @@ class MainActivity : ComponentActivity() {
         val zone = ZoneId.systemDefault()
         val schedule = workScheduleStore.read()
         val auto = autoStore.read(now)
-        val anchor = latestUsage?.fiveHour?.reset
+        val diagnosticSummary = QuotaDiagnosticsPresentation.summary(quotaObservations, zone)
+        val diagnosticDetails = QuotaDiagnosticsPresentation.details(quotaObservations, zone)
+        val evidence = FiveHourEvidencePolicy.evaluate(quotaObservations, now)
+        val windowPhase = when (evidence.kind) {
+            FiveHourEvidenceKind.ACTIVE -> FiveHourWindowPhase.ACTIVE
+            FiveHourEvidenceKind.STANDBY,
+            FiveHourEvidenceKind.AMBIGUOUS,
+            -> FiveHourWindowPhase.READY
+            FiveHourEvidenceKind.UNKNOWN -> FiveHourWindowPhase.UNKNOWN
+        }
+        val anchor = evidence.resetAt.takeIf { windowPhase == FiveHourWindowPhase.ACTIVE }
+        val presentedUsage = latestUsage?.let { usage ->
+            if (windowPhase == FiveHourWindowPhase.READY) {
+                usage.copy(fiveHour = usage.fiveHour.copy(percent = 0.0))
+            } else {
+                usage
+            }
+        }
         // An unseeded target is only a metadata refresh, not an activation.
         val nextEpoch = auto.target.takeIf { auto.enabled && auto.seeded }
         val nextLocal = nextEpoch?.let { Instant.ofEpochSecond(it).atZone(zone) }
@@ -693,24 +836,51 @@ class MainActivity : ComponentActivity() {
             connected = tokens != null,
             busy = busy.get(),
             deviceCode = deviceCode,
-            usage = latestUsage,
-            fiveResetText = latestUsage?.let {
-                QuotaPresentation.resetLabel(it.fiveHour.reset, now, zone)
-            } ?: getString(R.string.connect_to_read),
+            usage = presentedUsage,
+            fiveResetText = when (windowPhase) {
+                FiveHourWindowPhase.ACTIVE -> QuotaPresentation.resetLabel(anchor, now, zone)
+                FiveHourWindowPhase.READY -> "窗口待激活"
+                FiveHourWindowPhase.UNKNOWN -> if (latestUsage == null) {
+                    getString(R.string.connect_to_read)
+                } else {
+                    "窗口状态未知"
+                }
+            },
             weeklyResetText = latestUsage?.let {
                 QuotaPresentation.resetLabel(it.weekly.reset, now, zone)
             } ?: getString(R.string.connect_to_read),
-            countdown = TimelinePresentation.countdown(anchor, now),
+            countdownLabel = if (windowPhase == FiveHourWindowPhase.ACTIVE) {
+                "5 小时窗口倒计时"
+            } else {
+                "5 小时窗口状态"
+            },
+            countdown = when (windowPhase) {
+                FiveHourWindowPhase.ACTIVE -> TimelinePresentation.duration(anchor!! - now)
+                FiveHourWindowPhase.READY -> "等待激活"
+                FiveHourWindowPhase.UNKNOWN -> "—"
+            },
             timeline = TimelinePresentation.dayTimeline(
                 anchor = anchor,
                 now = now,
                 zone = zone,
                 schedule = schedule,
                 autoEnabled = auto.enabled,
+                windowPhase = windowPhase,
                 nextActivationEpoch = nextEpoch,
                 completedActivations = auto.successfulActivations,
             ),
-            timelineTitle = if (auto.enabled) "今日激活计划" else "今日额度窗口",
+            timelineTitle = when {
+                auto.enabled -> "今日激活计划"
+                windowPhase == FiveHourWindowPhase.ACTIVE -> "当前窗口"
+                windowPhase == FiveHourWindowPhase.READY -> "窗口待命"
+                else -> "窗口状态"
+            },
+            timelineHint = when {
+                auto.enabled -> "下一次自动激活不在今天"
+                windowPhase == FiveHourWindowPhase.READY -> "尚未启动新窗口 · 发送激活请求后开始倒计时"
+                windowPhase == FiveHourWindowPhase.ACTIVE -> "当前窗口跨至明天"
+                else -> "刷新额度后确认窗口状态"
+            },
             nextActivationTime = nextLocal?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "--:--",
             nextActivationDate = when {
                 !auto.enabled -> "未启用"
@@ -723,6 +893,9 @@ class MainActivity : ComponentActivity() {
             exactAlarmReady = AutoAlarm.canScheduleExact(this),
             schedule = schedule,
             workPlan = TimelinePresentation.workPlanText(schedule),
+            quotaDiagnosticsSummary = diagnosticSummary,
+            quotaDiagnosticsDetails = diagnosticDetails,
+            quotaDiagnosticsAvailable = quotaObservations.isNotEmpty(),
         )
     }
 
@@ -734,6 +907,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val AUTO_RESTORE_COOLDOWN_MS = 60_000L
+        const val WINDOW_CONFIRMATION_DELAY_MS = WINDOW_CONFIRMATION_DELAY_SECONDS * 1000L
     }
 
     override fun onDestroy() {

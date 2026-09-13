@@ -45,6 +45,34 @@ class AutoPolicyTest {
     }
 
     @Test
+    fun confirmedStandbySchedulesAnActivationInsteadOfWaitingForFloatingReset() {
+        val decision = AutoPolicy.enable(
+            now,
+            quota(0.0, now + AUTO_FIVE_HOURS),
+            quota(40.0, now + 10_000),
+            evidence = FiveHourEvidenceKind.STANDBY,
+        )
+
+        assertEquals(AutoAction.WAIT, decision.action)
+        assertEquals(now + 10, decision.target)
+        assertEquals(true, decision.seeded)
+    }
+
+    @Test
+    fun ambiguousZeroUsageWindowGetsMetadataConfirmationOnly() {
+        val decision = AutoPolicy.enable(
+            now,
+            quota(0.0, now + AUTO_FIVE_HOURS),
+            quota(40.0, now + 10_000),
+            evidence = FiveHourEvidenceKind.AMBIGUOUS,
+        )
+
+        assertEquals(AutoAction.METADATA_RETRY, decision.action)
+        assertEquals(now + WINDOW_CONFIRMATION_DELAY_SECONDS, decision.target)
+        assertEquals(false, decision.seeded)
+    }
+
+    @Test
     fun initialEnableWithoutFiveHourAnchorRemainsUnseeded() {
         val decision = AutoPolicy.enable(now, quota(null, null), quota(40.0, now + 1_000))
 
@@ -253,6 +281,22 @@ class AutoPolicyTest {
                 quota(40.0, reset),
                 quota(40.0, current + 86_400),
                 zone,
+            ),
+        )
+    }
+
+    @Test
+    fun zeroUsageFloatingResetDoesNotOverridePersistedScheduleBase() {
+        val persisted = now + 30
+        val current = state(target = persisted).copy(baseTarget = persisted)
+
+        assertEquals(
+            persisted,
+            AutoPolicy.scheduleBase(
+                current,
+                now,
+                quota(0.0, now + AUTO_FIVE_HOURS),
+                quota(40.0, now + 10_000),
             ),
         )
     }

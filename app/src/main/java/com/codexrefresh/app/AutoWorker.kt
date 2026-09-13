@@ -22,6 +22,7 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
 
         val tokenStore = TokenStore(applicationContext)
         val client = CodexClient()
+        val diagnosticsStore = QuotaDiagnosticsStore(applicationContext)
         val workSchedule = WorkScheduleStore(applicationContext).read()
         activeClient = client
         var tokens: Tokens
@@ -39,11 +40,46 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
             val usage = client.usage(tokens)
             state = store.read()
             if (!state.enabled || state.generation != generation) return Result.success()
+            // This quota request is already required as the safety preflight.
+            // Persist its result so activity on another Codex client can update
+            // the local reset snapshot and notification without extra polling.
+            QuotaResetStore(applicationContext).save(usage)
+            val observationSource = if (state.lastResult == WINDOW_CONFIRMATION_REASON) {
+                QuotaObservationSource.WINDOW_CONFIRMATION
+            } else {
+                QuotaObservationSource.AUTO_PREFLIGHT
+            }
+            val observations = runCatching {
+                diagnosticsStore.record(observationSource, usage)
+            }.getOrElse { diagnosticsStore.read() }
+            AutoKeepAlive.refreshNotification(applicationContext)
             val now = System.currentTimeMillis() / 1000
+            val evidence = FiveHourEvidencePolicy.evaluate(observations, now)
+
+            if (evidence.kind == FiveHourEvidenceKind.AMBIGUOUS) {
+                val target = now + WINDOW_CONFIRMATION_DELAY_SECONDS
+                val updated = store.updateIfCurrent(generation) { current ->
+                    current.copy(
+                        target = target,
+                        baseTarget = target,
+                        lastResult = WINDOW_CONFIRMATION_REASON,
+                        attemptStartedAt = null,
+                    )
+                }
+                if (updated != null) scheduleSuccessorIfCurrent(store, target, generation)
+                return Result.success()
+            }
+            val schedulingFive = evidence.schedulingQuota(usage.fiveHour)
 
             // The first worker after opt-in is metadata-only by construction.
             if (!state.seeded) {
-                val seed = AutoPolicy.enable(now, usage.fiveHour, usage.weekly, workSchedule)
+                val seed = AutoPolicy.enable(
+                    now,
+                    schedulingFive,
+                    usage.weekly,
+                    workSchedule,
+                    evidence = evidence.kind,
+                )
                 val updated = store.updateIfCurrent(generation) { current ->
                     current.copy(
                         target = seed.target,
@@ -59,7 +95,7 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
                 return Result.success()
             }
 
-            val decision = AutoPolicy.due(state, now, usage.fiveHour, usage.weekly, workSchedule)
+            val decision = AutoPolicy.due(state, now, schedulingFive, usage.weekly, workSchedule)
             if (decision.action != AutoAction.ATTEMPT) {
                 val target = decision.target
                 if (target != null) {
@@ -109,6 +145,13 @@ class AutoWorker(appContext: Context, params: WorkerParameters) :
                 ?.reset
             if (probe.verified && refreshed != null) {
                 QuotaResetStore(applicationContext).save(refreshed)
+                runCatching {
+                    diagnosticsStore.record(
+                        QuotaObservationSource.AUTO_ACTIVATION,
+                        refreshed,
+                        appRequestSent = true,
+                    )
+                }
                 AutoKeepAlive.refreshNotification(applicationContext)
             }
             val baseTarget = if (probe.verified) {

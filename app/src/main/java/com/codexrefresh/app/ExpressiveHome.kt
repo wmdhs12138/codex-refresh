@@ -83,9 +83,11 @@ data class ExpressiveHomeState(
     val usage: Usage? = null,
     val fiveResetText: String = "连接 Codex 后读取",
     val weeklyResetText: String = "连接 Codex 后读取",
+    val countdownLabel: String = "5 小时窗口状态",
     val countdown: String = "—",
     val timeline: DayTimelineState = DayTimelineState(),
-    val timelineTitle: String = "今日额度窗口",
+    val timelineTitle: String = "窗口状态",
+    val timelineHint: String = "刷新额度后确认窗口状态",
     val nextActivationTime: String = "--:--",
     val nextActivationDate: String = "未启用",
     val autoEnabled: Boolean = false,
@@ -98,6 +100,10 @@ data class ExpressiveHomeState(
     val contextDetails: String = "",
     val contextAvailable: Boolean = false,
     val contextExpanded: Boolean = false,
+    val quotaDiagnosticsSummary: String = "尚无观测记录",
+    val quotaDiagnosticsDetails: String = "",
+    val quotaDiagnosticsAvailable: Boolean = false,
+    val quotaDiagnosticsExpanded: Boolean = false,
     val connectLabel: String = "连接 Codex",
     val connectEnabled: Boolean = true,
     val probeVisible: Boolean = false,
@@ -117,6 +123,8 @@ data class ExpressiveHomeActions(
     val pickWorkStart: () -> Unit,
     val pickWorkEnd: () -> Unit,
     val toggleContext: () -> Unit,
+    val toggleQuotaDiagnostics: () -> Unit,
+    val copyQuotaDiagnostics: () -> Unit,
     val openBackgroundSettings: () -> Unit,
     val requestExactAlarm: () -> Unit,
 )
@@ -299,7 +307,7 @@ private fun HeroWindowCard(state: ExpressiveHomeState) {
     ) {
         Column(modifier = Modifier.padding(horizontal = 22.dp, vertical = 20.dp)) {
             Text(
-                "5 小时窗口倒计时",
+                state.countdownLabel,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -322,7 +330,7 @@ private fun HeroWindowCard(state: ExpressiveHomeState) {
             ExpressiveTimeline(state.timeline)
             AnimatedVisibility(state.timeline.markers.isEmpty()) {
                 Text(
-                    "刷新额度后显示窗口点",
+                    state.timelineHint,
                     modifier = Modifier.padding(top = 7.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .68f),
@@ -373,7 +381,6 @@ private fun ExpressiveTimeline(state: DayTimelineState) {
             state.markers.forEach { marker ->
                 val center = Offset(x(marker.minuteOfDay), railY)
                 val markerColor = when (marker.kind) {
-                    TimelineMarkerKind.ESTIMATED -> scheme.onPrimaryContainer.copy(alpha = .48f)
                     TimelineMarkerKind.PLANNED -> scheme.onPrimaryContainer.copy(alpha = .76f)
                     else -> scheme.primary
                 }
@@ -385,12 +392,6 @@ private fun ExpressiveTimeline(state: DayTimelineState) {
                     cap = StrokeCap.Round,
                 )
                 when (marker.kind) {
-                    TimelineMarkerKind.ESTIMATED -> drawCircle(
-                        markerColor,
-                        4.5.dp.toPx(),
-                        center,
-                        style = Stroke(1.8.dp.toPx()),
-                    )
                     TimelineMarkerKind.CONFIRMED,
                     TimelineMarkerKind.PLANNED,
                     -> drawCircle(markerColor, 5.5.dp.toPx(), center)
@@ -442,32 +443,30 @@ private fun ExpressiveTimeline(state: DayTimelineState) {
 
         val labelWidth = 58.dp
         val maxLabelX = maxWidth - labelWidth
-        state.markers
-            .filter { it.kind != TimelineMarkerKind.ESTIMATED }
-            .forEach { marker ->
-                val rawX = markerX(marker.minuteOfDay) - labelWidth / 2
-                val labelX = rawX.coerceIn(0.dp, maxLabelX)
+        state.markers.forEach { marker ->
+            val rawX = markerX(marker.minuteOfDay) - labelWidth / 2
+            val labelX = rawX.coerceIn(0.dp, maxLabelX)
+            Text(
+                formatTimelineMinute(marker.minuteOfDay),
+                modifier = Modifier.offset(x = labelX).width(labelWidth),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (marker.kind == TimelineMarkerKind.NEXT) FontWeight.ExtraBold else FontWeight.Medium,
+                color = if (marker.kind == TimelineMarkerKind.NEXT) scheme.primary else scheme.onPrimaryContainer,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+            if (marker.kind == TimelineMarkerKind.NEXT) {
                 Text(
-                    formatTimelineMinute(marker.minuteOfDay),
-                    modifier = Modifier.offset(x = labelX).width(labelWidth),
+                    "下一次",
+                    modifier = Modifier.offset(x = labelX, y = 47.dp).width(labelWidth),
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = if (marker.kind == TimelineMarkerKind.NEXT) FontWeight.ExtraBold else FontWeight.Medium,
-                    color = if (marker.kind == TimelineMarkerKind.NEXT) scheme.primary else scheme.onPrimaryContainer,
+                    fontWeight = FontWeight.Bold,
+                    color = scheme.primary,
                     textAlign = TextAlign.Center,
                     maxLines = 1,
                 )
-                if (marker.kind == TimelineMarkerKind.NEXT) {
-                    Text(
-                        "下一次",
-                        modifier = Modifier.offset(x = labelX, y = 47.dp).width(labelWidth),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = scheme.primary,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                    )
-                }
             }
+        }
         Text(
             "00",
             modifier = Modifier.align(Alignment.TopStart).offset(y = 47.dp),
@@ -840,9 +839,66 @@ private fun ManualFallbackCard(state: ExpressiveHomeState, actions: ExpressiveHo
             if (state.contextAvailable) {
                 ContextCard(state, actions.toggleContext)
             }
+            if (state.quotaDiagnosticsAvailable) {
+                QuotaDiagnosticsCard(
+                    state = state,
+                    onToggle = actions.toggleQuotaDiagnostics,
+                    onCopy = actions.copyQuotaDiagnostics,
+                )
+            }
             if (state.logoutVisible) {
                 TextButton(onClick = actions.logout, modifier = Modifier.fillMaxWidth()) {
                     Text("退出登录并停用自动任务", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuotaDiagnosticsCard(
+    state: ExpressiveHomeState,
+    onToggle: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(spring(stiffness = Spring.StiffnessMediumLow)),
+        shape = RoundedCornerShape(topStart = 9.dp, topEnd = 22.dp, bottomEnd = 22.dp, bottomStart = 22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "额度原始观测",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        state.quotaDiagnosticsSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 3.dp),
+                    )
+                }
+                TextButton(onClick = onToggle) {
+                    Text(if (state.quotaDiagnosticsExpanded) "收起 ↑" else "展开 ↓")
+                }
+            }
+            AnimatedVisibility(state.quotaDiagnosticsExpanded) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Text(
+                        state.quotaDiagnosticsDetails,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(
+                        onClick = onCopy,
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("复制诊断记录")
+                    }
                 }
             }
         }
