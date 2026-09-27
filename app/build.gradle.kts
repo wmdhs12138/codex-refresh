@@ -21,7 +21,7 @@ check(hasReleaseSigning || releaseSigningValues.all { it.isNullOrBlank() }) {
 }
 
 android { namespace = "com.codexrefresh.app"; compileSdk = 36
-    defaultConfig { applicationId = "com.codexrefresh.app"; minSdk = 26; targetSdk = 36; versionCode = 17; versionName = "0.5.4-gemini" }
+    defaultConfig { applicationId = "com.codexrefresh.app"; minSdk = 26; targetSdk = 36; versionCode = 18; versionName = "0.5.5-gemini" }
     buildFeatures { compose = true }
 
     signingConfigs {

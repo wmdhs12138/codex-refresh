@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -551,11 +552,15 @@ private fun MainDataPanel(state: ExpressiveHomeState) {
                     state.countdown == "—" -> "DISCONNECTED"
                     else -> "ACTIVE"
                 }
-                Text(
-                    "$phase  ${if (railExpanded) "▴" else "▾"}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        phase,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(Modifier.width(2.dp))
+                    ExpandIcon(railExpanded, size = 18.dp)
+                }
                 AnimatedVisibility(railExpanded) {
                     Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -869,9 +874,10 @@ private fun WorkScheduleSection(state: ExpressiveHomeState, actions: ExpressiveH
                         checked = schedule.enabled,
                         onCheckedChange = actions.toggleWorkSchedule
                     )
-                    Text(
-                        if (isExpanded && schedule.enabled) "▲" else "▼",
-                        style = MaterialTheme.typography.labelMedium
+                    ExpandIcon(
+                        isExpanded && schedule.enabled,
+                        size = 24.dp,
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
                 }
             }
@@ -1301,7 +1307,7 @@ private fun SettingsSheet(state: ExpressiveHomeState, actions: ExpressiveHomeAct
                     title = "手动激活模型",
                     detail = "只用于 ACTIVATE，自动激活不受影响",
                     value = if (state.manualModelsLoading) "读取中…" else current?.name ?: state.manualModelId,
-                    trailing = if (modelsOpen) "▴" else "▾",
+                    expanded = modelsOpen,
                     onClick = {
                         // 目录还没读到时，点这一行就是重试
                         if (state.manualModels.isEmpty()) actions.refreshManualModels() else modelsOpen = !modelsOpen
@@ -1338,7 +1344,7 @@ private fun SettingsSheet(state: ExpressiveHomeState, actions: ExpressiveHomeAct
                 SettingRow(
                     title = "最近一次手动请求",
                     detail = state.contextSummary,
-                    trailing = if (state.contextExpanded) "▴" else "▾",
+                    expanded = state.contextExpanded,
                     onClick = actions.toggleContext,
                 )
                 AnimatedVisibility(state.contextExpanded) {
@@ -1354,7 +1360,7 @@ private fun SettingsSheet(state: ExpressiveHomeState, actions: ExpressiveHomeAct
                 SettingRow(
                     title = "额度诊断",
                     detail = state.quotaDiagnosticsSummary,
-                    trailing = if (state.quotaDiagnosticsExpanded) "▴" else "▾",
+                    expanded = state.quotaDiagnosticsExpanded,
                     onClick = actions.toggleQuotaDiagnostics,
                 )
                 AnimatedVisibility(state.quotaDiagnosticsExpanded) {
@@ -1399,14 +1405,14 @@ private fun SettingsSheet(state: ExpressiveHomeState, actions: ExpressiveHomeAct
     }
 }
 
-/** onClick 为 null 时只展示状态，不可点也不画箭头。 */
+/** onClick 为 null 时只展示状态，不可点也不画箭头；expanded 非 null 时是可展开行，否则是跳转行。 */
 @Composable
 private fun SettingRow(
     title: String,
     detail: String?,
     value: String? = null,
     valueColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-    trailing: String = "›",
+    expanded: Boolean? = null,
     onClick: (() -> Unit)?,
 ) {
     Row(
@@ -1440,14 +1446,38 @@ private fun SettingRow(
             )
         }
         if (onClick != null) {
-            Text(
-                trailing,
-                modifier = Modifier.padding(start = 8.dp),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
-            )
+            val tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+            Spacer(Modifier.width(8.dp))
+            if (expanded != null) {
+                ExpandIcon(expanded, tint = tint)
+            } else {
+                Icon(
+                    painterResource(R.drawable.ic_chevron_right),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = tint
+                )
+            }
         }
     }
+}
+
+/** 展开指示：向下的 chevron，展开时转半圈朝上。 */
+@Composable
+private fun ExpandIcon(
+    expanded: Boolean,
+    size: Dp = 20.dp,
+    tint: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+) {
+    val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "expandRotation")
+    Icon(
+        painterResource(R.drawable.ic_expand_more),
+        contentDescription = if (expanded) "收起" else "展开",
+        modifier = Modifier
+            .size(size)
+            .graphicsLayer { rotationZ = rotation },
+        tint = tint
+    )
 }
 
 @Composable
