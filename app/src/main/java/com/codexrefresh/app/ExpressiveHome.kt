@@ -49,6 +49,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
@@ -197,6 +198,9 @@ fun ExpressiveHomeScreen(state: ExpressiveHomeState, actions: ExpressiveHomeActi
             ) {
                 // 顶部状态栏
                 StatusBar(state)
+
+                // 设备码登录：浏览器页只有输入框，验证码必须在这里看到
+                state.deviceCode?.let { DeviceCodePanel(it, actions.copyCode) }
 
                 // 主数据区
                 MainDataPanel(state)
@@ -447,6 +451,44 @@ private fun StatusBar(state: ExpressiveHomeState) {
 }
 
 @Composable
+private fun DeviceCodePanel(code: String, onCopy: () -> Unit) {
+    GlassPanel(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onCopy)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "DEVICE CODE",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                code,
+                style = MaterialTheme.typography.headlineMedium,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 4.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "在浏览器中输入此验证码 · 点按复制",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        }
+    }
+}
+
+@Composable
 private fun MainDataPanel(state: ExpressiveHomeState) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         // 倒计时大数字 - 毛玻璃卡片
@@ -599,6 +641,17 @@ private fun ControlSection(state: ExpressiveHomeState, actions: ExpressiveHomeAc
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
+                    // 未授权时只能近似唤醒，夜间 Doze 下可能晚点
+                    if (state.autoEnabled && !state.exactAlarmReady) {
+                        Text(
+                            "未授权准时唤醒，夜间可能延迟 · 点按设置",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .padding(top = 4.dp)
+                                .clickable(onClick = actions.requestExactAlarm)
+                        )
+                    }
                 }
                 Switch(
                     checked = state.autoEnabled,
@@ -629,7 +682,7 @@ private fun ControlSection(state: ExpressiveHomeState, actions: ExpressiveHomeAc
                 modifier = Modifier.weight(1f).height(44.dp),
                 shape = RoundedCornerShape(8.dp)
             ) {
-                Text("REFRESH", fontWeight = FontWeight.Bold)
+                Text(if (state.connected) "REFRESH" else "CONNECT", fontWeight = FontWeight.Bold)
             }
 
             if (state.probeVisible) {
@@ -760,7 +813,7 @@ private fun WorkScheduleSection(state: ExpressiveHomeState, actions: ExpressiveH
                         onCheckedChange = actions.toggleWorkSchedule
                     )
                     Text(
-                        if (isExpanded) "▲" else "▼",
+                        if (isExpanded && schedule.enabled) "▲" else "▼",
                         style = MaterialTheme.typography.labelMedium
                     )
                 }
