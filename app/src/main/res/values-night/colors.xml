@@ -1,19 +1,19 @@
 <resources>
-    <color name="surface">#1B1115</color>
-    <color name="surface_container">#281C21</color>
-    <color name="surface_container_high">#33262B</color>
-    <color name="ink">#F0DEE3</color>
-    <color name="muted">#D5BEC5</color>
+    <color name="surface">#121212</color>
+    <color name="surface_container">#1E1E1E</color>
+    <color name="surface_container_high">#2A2A2A</color>
+    <color name="ink">#E6E1E5</color>
+    <color name="muted">#CAC4D0</color>
 
-    <color name="accent">#FFB0C7</color>
-    <color name="on_accent">#650032</color>
-    <color name="primary_container">#861845</color>
+    <color name="accent">#E89BAF</color>
+    <color name="on_accent">#5A0032</color>
+    <color name="primary_container">#7D1845</color>
     <color name="on_primary_container">#FFD9E3</color>
-    <color name="secondary">#EAB8C8</color>
-    <color name="secondary_container">#603B49</color>
+    <color name="secondary">#D9B8C8</color>
+    <color name="secondary_container">#5A3B49</color>
     <color name="on_secondary_container">#FFD9E4</color>
-    <color name="tertiary">#F4BB80</color>
-    <color name="tertiary_container">#633C16</color>
+    <color name="tertiary">#E5B88D</color>
+    <color name="tertiary_container">#5D3C16</color>
     <color name="on_tertiary_container">#FFDCC1</color>
 
     <color name="destructive">#FFB4AB</color>

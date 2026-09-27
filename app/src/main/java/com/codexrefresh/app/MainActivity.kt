@@ -39,6 +39,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var quotaResetStore: QuotaResetStore
     private lateinit var quotaDiagnosticsStore: QuotaDiagnosticsStore
     private lateinit var workScheduleStore: WorkScheduleStore
+    private val modelCatalogGeneration = AtomicLong(0)
+    private var manualModelId: String = DEFAULT_PROBE_MODEL_ID
     private var quotaObservations: List<QuotaObservation> = emptyList()
     private var latestUsage: Usage? = null
     private var deviceCode: String? = null
@@ -83,6 +85,9 @@ class MainActivity : ComponentActivity() {
         quotaDiagnosticsStore = QuotaDiagnosticsStore(this)
         quotaObservations = quotaDiagnosticsStore.read()
         workScheduleStore = WorkScheduleStore(this)
+        manualModelId = getSharedPreferences("manual_probe", MODE_PRIVATE)
+            .getString("model_id", DEFAULT_PROBE_MODEL_ID) ?: DEFAULT_PROBE_MODEL_ID
+        expressiveState = expressiveState.copy(manualModelId = manualModelId)
         setContent {
             CodexExpressiveTheme {
                 ExpressiveHomeScreen(
@@ -92,6 +97,8 @@ class MainActivity : ComponentActivity() {
                             if (tokens == null) login() else refresh(QuotaObservationSource.MANUAL_REFRESH)
                         },
                         probe = ::probe,
+                        refreshManualModels = ::refreshManualModels,
+                        selectManualModel = ::selectManualModel,
                         copyCode = ::copyDeviceCode,
                         logout = ::confirmLogout,
                         toggleAuto = ::setAuto,
@@ -100,6 +107,7 @@ class MainActivity : ComponentActivity() {
                         },
                         pickWorkStart = { pickWorkTime(pickingStart = true) },
                         pickWorkEnd = { pickWorkTime(pickingStart = false) },
+                        setWorkRange = ::setWorkRange,
                         toggleContext = {
                             expressiveState = expressiveState.copy(
                                 contextExpanded = !expressiveState.contextExpanded,
@@ -129,6 +137,7 @@ class MainActivity : ComponentActivity() {
         } else {
             expressiveState = expressiveState.copy(logoutVisible = true)
             refresh(QuotaObservationSource.APP_OPEN)
+            refreshManualModels()
         }
         renderAuto()
     }
@@ -164,6 +173,7 @@ class MainActivity : ComponentActivity() {
                 }
                 deviceCode = null
                 fetchUsageAndRender(operation, source = QuotaObservationSource.LOGIN)
+                runOnUiThread { refreshManualModels() }
             } catch (e: Exception) {
                 updateFor(operation) { fail(e) }
             } finally {
@@ -232,6 +242,9 @@ class MainActivity : ComponentActivity() {
             updateActionStatus("额度已耗尽，暂不发送激活请求", StatusTone.ERROR)
             return
         }
+        val selectedModelId = manualModelId
+        val selectedModel = expressiveState.manualModels.firstOrNull { it.id == selectedModelId }
+        val contextReference = selectedModel?.contextReference
         val operation = beginOperation("正在发送激活请求…") ?: return
         executor.execute {
             var manualLease: AutoState? = null
@@ -254,7 +267,7 @@ class MainActivity : ComponentActivity() {
                 fresh = TokenCoordinator.latest(store, client)
                     ?: error("需要重新登录")
                 tokens = fresh
-                val result = client.probe(fresh) { !isCurrent(operation) }
+                val result = client.probe(fresh, selectedModelId, selectedModel) { !isCurrent(operation) }
                 if (!isCurrent(operation)) return@execute
                 val postUsageAttempt = if (result.verified) {
                     val postTokens = TokenCoordinator.latest(store, client)
@@ -270,13 +283,17 @@ class MainActivity : ComponentActivity() {
                 val verification = if (result.verified) "匹配" else "不匹配"
                 val requestTime = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date())
                 val totalTokens = result.inputTokens + result.outputTokens
-                val contextPercent = totalTokens.toDouble() * 100.0 / CODEX_CONTEXT_REFERENCE
                 val rateLimits = result.rateLimitHeaders.entries.joinToString(" · ") { "${it.key}=${it.value}" }
                 val contextText = buildString {
                     append("上次请求：输入 ${result.inputTokens} · 输出 ${result.outputTokens} · 缓存 ${result.cachedTokens}\n")
                     append("挑战验证：$verification（$expected）\n")
-                    append("模型：${result.model} · $totalTokens/$CODEX_CONTEXT_REFERENCE tokens（${String.format(Locale.US, "%.3f", contextPercent)}%）\n")
-                    append("容量为 Pi 当前 Codex 元数据参考值，不是官方产品承诺\n")
+                    append("模型：${result.model} · $totalTokens tokens")
+                    if (contextReference != null) {
+                        val contextPercent = totalTokens.toDouble() * 100.0 / contextReference
+                        append(" / $contextReference（${String.format(Locale.US, "%.3f", contextPercent)}%）")
+                    }
+                    append("\n")
+                    if (contextReference != null) append("容量为 Codex 当前模型目录参考值，不是官方产品承诺\n")
                     append("时间：$requestTime\n")
                     if (rateLimits.isNotBlank()) append("响应限流头：$rateLimits\n")
                     append("仅代表本次请求，不是持久会话上下文")
@@ -443,6 +460,16 @@ class MainActivity : ComponentActivity() {
         ).show()
     }
 
+    private fun setWorkRange(startMinute: Int, endMinute: Int) {
+        if (startMinute == endMinute) {
+            updateStatus(getString(R.string.work_time_equal_error), StatusTone.ERROR)
+            return
+        }
+        val current = workScheduleStore.read()
+        if (current.startMinute == startMinute && current.endMinute == endMinute) return
+        updateWorkSchedule(current.copy(startMinute = startMinute, endMinute = endMinute))
+    }
+
     private fun updateWorkSchedule(schedule: WorkSchedule) {
         workScheduleStore.write(schedule)
         val state = autoStore.read()
@@ -518,6 +545,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun logout() {
+        modelCatalogGeneration.incrementAndGet()
         autoStore.disable("已退出登录")
         cancelAuto(this)
         AutoKeepAlive.stop(this)
@@ -533,6 +561,46 @@ class MainActivity : ComponentActivity() {
         deviceCode = null
         busy.set(false)
         renderDisconnected()
+    }
+
+    private fun refreshManualModels() {
+        if (tokens == null || expressiveState.manualModelsLoading) return
+        val generation = modelCatalogGeneration.incrementAndGet()
+        expressiveState = expressiveState.copy(manualModelsLoading = true, manualModelsError = null)
+        executor.execute {
+            val result = runCatching {
+                val fresh = TokenCoordinator.latest(store, client) ?: error("需要重新登录")
+                client.models(fresh)
+            }
+            runOnUiThread {
+                if (modelCatalogGeneration.get() != generation || tokens == null) return@runOnUiThread
+                result.onSuccess { models ->
+                    val choice = manualModelId.takeIf { id -> models.any { it.id == id } }
+                        ?: models.firstOrNull { it.id == DEFAULT_PROBE_MODEL_ID }?.id
+                        ?: models.first().id
+                    manualModelId = choice
+                    getSharedPreferences("manual_probe", MODE_PRIVATE).edit().putString("model_id", choice).apply()
+                    expressiveState = expressiveState.copy(
+                        manualModels = models,
+                        manualModelId = choice,
+                        manualModelsLoading = false,
+                        manualModelsError = null,
+                    )
+                }.onFailure { error ->
+                    expressiveState = expressiveState.copy(
+                        manualModelsLoading = false,
+                        manualModelsError = "模型目录读取失败：${safeMessage(error).take(100)}。点模型按钮重试",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun selectManualModel(id: String) {
+        if (expressiveState.manualModels.none { it.id == id }) return
+        manualModelId = id
+        getSharedPreferences("manual_probe", MODE_PRIVATE).edit().putString("model_id", id).apply()
+        expressiveState = expressiveState.copy(manualModelId = id)
     }
 
     private fun copyDeviceCode() {
@@ -752,6 +820,9 @@ class MainActivity : ComponentActivity() {
             connectEnabled = true,
             probeVisible = false,
             probeEnabled = false,
+            manualModels = emptyList(),
+            manualModelsLoading = false,
+            manualModelsError = null,
             logoutVisible = false,
         )
         renderAuto()
@@ -899,7 +970,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun safeMessage(error: Exception): String =
+    private fun safeMessage(error: Throwable): String =
         redactTokenText(error.message ?: "未知错误").take(200)
 
     private fun isAuthFailure(error: Exception): Boolean =

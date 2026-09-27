@@ -17,9 +17,9 @@ private const val USAGE = "https://chatgpt.com/backend-api/wham/usage"
 private const val FIVE_HOURS = 18_000L
 private const val WEEK = 604_800L
 private const val CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
-private const val CODEX_MODEL = "gpt-5.6-luna"
-// ChatGPT Codex does not publish this product limit; this is the installed Pi transport metadata.
-const val CODEX_CONTEXT_REFERENCE = 272_000
+// Codex requires client_version on catalog requests; keep this in step with a supported CLI version.
+private const val CODEX_MODELS_URL = "https://chatgpt.com/backend-api/codex/models?client_version=0.156.0"
+const val DEFAULT_PROBE_MODEL_ID = "gpt-5.6-luna"
 
 data class DeviceCode(val id: String, val code: String, val interval: Long)
 data class Tokens(val access: String, val refresh: String, val expiresAt: Long)
@@ -166,19 +166,27 @@ class CodexClient {
         JSONObject(raw).optJSONObject("https://api.openai.com/auth")?.optString("chatgpt_account_id", "").orEmpty()
     } catch (_: Exception) { "" }
 
-    fun probe(tokens: Tokens, cancelled: () -> Boolean): ProbeResult {
+    fun models(tokens: Tokens): List<ProbeModel> {
+        val headers = mutableMapOf("Authorization" to "Bearer ${tokens.access}", "Accept" to "application/json", "Cache-Control" to "no-cache")
+        accountId(tokens.access).takeIf { it.isNotBlank() }?.let { headers["ChatGPT-Account-Id"] = it }
+        return parseProbeModels(json(request(CODEX_MODELS_URL, "GET", headers = headers), "读取模型目录"))
+    }
+
+    fun probe(
+        tokens: Tokens,
+        modelId: String = DEFAULT_PROBE_MODEL_ID,
+        model: ProbeModel? = null,
+        cancelled: () -> Boolean,
+    ): ProbeResult {
         if (cancelled() || Thread.currentThread().isInterrupted) error("已取消测试请求")
+        require(modelId.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,99}"))) { "无效的激活请求模型" }
+        require(model == null || model.id == modelId) { "模型目录与请求不一致" }
         val challenge = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
         val account = accountId(tokens.access)
         val requestId = java.util.UUID.randomUUID().toString()
         val headers = mutableMapOf("Authorization" to "Bearer ${tokens.access}", "Accept" to "text/event-stream", "Content-Type" to "application/json", "OpenAI-Beta" to "responses=experimental", "originator" to "codex-refresh-android", "User-Agent" to "CodexRefreshAndroid/0.1.0", "Cache-Control" to "no-cache", "session-id" to requestId, "x-client-request-id" to requestId)
         if (account.isNotBlank()) headers["chatgpt-account-id"] = account
-        val body = JSONObject().apply {
-            put("model", CODEX_MODEL); put("store", false); put("stream", true)
-            put("instructions", "Reply with exactly the requested verification string and nothing else.")
-            put("input", org.json.JSONArray().put(JSONObject().apply { put("role", "user"); put("content", org.json.JSONArray().put(JSONObject().apply { put("type", "input_text"); put("text", "Return exactly: PI_ANDROID_KICK_$challenge") })) }))
-            put("text", JSONObject().put("verbosity", "low")); put("reasoning", JSONObject().put("effort", "low")); put("tool_choice", "none"); put("parallel_tool_calls", false)
-        }.toString()
+        val body = probeRequestBody(modelId, challenge, model)
         if (cancelled() || Thread.currentThread().isInterrupted) error("已取消测试请求")
         val connection = URL(CODEX_URL).openConnection() as HttpURLConnection
         activeProbe = connection
@@ -212,7 +220,7 @@ class CodexClient {
             val stream = state.result()
             val expected = "PI_ANDROID_KICK_$challenge"
             return ProbeResult(
-                CODEX_MODEL,
+                modelId,
                 challenge,
                 stream.text.trim() == expected,
                 stream.inputTokens,
@@ -230,6 +238,20 @@ class CodexClient {
 
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
 }
+
+internal fun probeRequestBody(
+    modelId: String,
+    challenge: String,
+    model: ProbeModel? = null,
+): String = JSONObject().apply {
+    put("model", modelId); put("store", false); put("stream", true)
+    put("instructions", "Reply with exactly the requested verification string and nothing else.")
+    put("input", org.json.JSONArray().put(JSONObject().apply { put("role", "user"); put("content", org.json.JSONArray().put(JSONObject().apply { put("type", "input_text"); put("text", "Return exactly: PI_ANDROID_KICK_$challenge") })) }))
+    if (model == null || model.supportsVerbosity) put("text", JSONObject().put("verbosity", "low"))
+    val effort = if (model == null) "low" else model.reasoningEffort
+    if (effort != null) put("reasoning", JSONObject().put("effort", effort))
+    put("tool_choice", "none"); put("parallel_tool_calls", false)
+}.toString()
 
 data class ProbeResult(
     val model: String,
