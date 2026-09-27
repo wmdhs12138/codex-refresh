@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -38,6 +40,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -48,6 +51,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -182,6 +188,7 @@ fun ExpressiveHomeScreen(state: ExpressiveHomeState, actions: ExpressiveHomeActi
     }
 
     val backdrop = rememberBackdrop()
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
 
     CompositionLocalProvider(LocalBackdrop provides backdrop) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -197,7 +204,7 @@ fun ExpressiveHomeScreen(state: ExpressiveHomeState, actions: ExpressiveHomeActi
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // 顶部状态栏
-                StatusBar(state)
+                StatusBar(state, onSettings = { settingsOpen = true })
 
                 // 设备码登录：浏览器页只有输入框，验证码必须在这里看到
                 state.deviceCode?.let { DeviceCodePanel(it, actions.copyCode) }
@@ -210,11 +217,6 @@ fun ExpressiveHomeScreen(state: ExpressiveHomeState, actions: ExpressiveHomeActi
 
                 // 工作时间优化（含可拖动功能）
                 WorkScheduleSection(state, actions)
-
-                // 高级选项
-                if (state.contextAvailable || state.quotaDiagnosticsAvailable || state.deviceCode != null || state.logoutVisible) {
-                    AdvancedOptions(state, actions)
-                }
             }
 
             SnackbarHost(
@@ -223,6 +225,10 @@ fun ExpressiveHomeScreen(state: ExpressiveHomeState, actions: ExpressiveHomeActi
                     .align(Alignment.BottomCenter)
                     .padding(16.dp)
             )
+
+            if (settingsOpen) {
+                SettingsSheet(state, actions, onDismiss = { settingsOpen = false })
+            }
         }
     }
 }
@@ -407,13 +413,13 @@ private fun GlassPanel(
 }
 
 @Composable
-private fun StatusBar(state: ExpressiveHomeState) {
+private fun StatusBar(state: ExpressiveHomeState, onSettings: () -> Unit) {
     GlassPanel(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp)
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -440,12 +446,29 @@ private fun StatusBar(state: ExpressiveHomeState) {
                 )
             }
 
-            Text(
-                if (state.connected) "ONLINE" else "OFFLINE",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (state.connected) "ONLINE" else "OFFLINE",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onSettings),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painterResource(R.drawable.ic_settings),
+                        contentDescription = "设置",
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+            }
         }
     }
 }
@@ -490,14 +513,20 @@ private fun DeviceCodePanel(code: String, onCopy: () -> Unit) {
 
 @Composable
 private fun MainDataPanel(state: ExpressiveHomeState) {
+    var railExpanded by rememberSaveable { mutableStateOf(false) }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // 倒计时大数字 - 毛玻璃卡片
+        // 倒计时大数字 - 毛玻璃卡片，点按展开 24 小时 Day Rail
         GlassPanel(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { railExpanded = !railExpanded }
+                    .padding(24.dp)
+                    .animateContentSize(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -517,15 +546,43 @@ private fun MainDataPanel(state: ExpressiveHomeState) {
                     )
                 )
                 Spacer(Modifier.height(4.dp))
+                val phase = when {
+                    state.countdown == "等待激活" -> "STANDBY"
+                    state.countdown == "—" -> "DISCONNECTED"
+                    else -> "ACTIVE"
+                }
                 Text(
-                    when {
-                        state.countdown == "等待激活" -> "STANDBY"
-                        state.countdown == "—" -> "DISCONNECTED"
-                        else -> "ACTIVE"
-                    },
+                    "$phase  ${if (railExpanded) "▴" else "▾"}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
+                AnimatedVisibility(railExpanded) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                state.timelineTitle,
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                "24H",
+                                style = MaterialTheme.typography.labelSmall,
+                                letterSpacing = 1.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        DayRail(state.timeline)
+                        if (state.timeline.markers.isEmpty()) {
+                            Text(
+                                state.timelineHint,
+                                modifier = Modifier.padding(top = 6.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -1053,14 +1110,367 @@ private fun TimeDisplay(label: String, time: String, onClick: () -> Unit) {
     }
 }
 
+// 24 小时 Day Rail：今天已过去的部分更粗更实；只画已确认的窗口结束点、自动计划点、
+// 下一次激活与真实成功，不从旧 reset 推造窗口
 @Composable
-private fun AdvancedOptions(state: ExpressiveHomeState, actions: ExpressiveHomeActions) {
-    if (state.logoutVisible) {
-        TextButton(
-            onClick = actions.logout,
-            modifier = Modifier.fillMaxWidth()
+private fun DayRail(state: DayTimelineState) {
+    val scheme = MaterialTheme.colorScheme
+    val ink = scheme.onSurface
+    val hasWorkBand = state.workLabel != null && state.workRanges.isNotEmpty()
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(if (hasWorkBand) 108.dp else 70.dp)
+            .semantics { contentDescription = state.accessibilityText },
+    ) {
+        val trackPadding = 7.dp
+        val trackWidth = maxWidth - trackPadding * 2
+        fun markerX(minute: Float) = trackPadding + trackWidth *
+            (minute.coerceIn(0f, MINUTES_PER_DAY.toFloat()) / MINUTES_PER_DAY)
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val railY = 32.dp.toPx()
+            val startX = trackPadding.toPx()
+            val endX = size.width - trackPadding.toPx()
+            fun x(minute: Float) = startX +
+                (minute.coerceIn(0f, MINUTES_PER_DAY.toFloat()) / MINUTES_PER_DAY) * (endX - startX)
+
+            drawLine(
+                color = ink.copy(alpha = .18f),
+                start = Offset(startX, railY),
+                end = Offset(endX, railY),
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+            state.nowMinute?.let { nowMinute ->
+                drawLine(
+                    color = ink.copy(alpha = .38f),
+                    start = Offset(startX, railY),
+                    end = Offset(x(nowMinute), railY),
+                    strokeWidth = 7.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+            }
+            state.markers.forEach { marker ->
+                val center = Offset(x(marker.minuteOfDay), railY)
+                val markerColor = when (marker.kind) {
+                    TimelineMarkerKind.PLANNED -> ink.copy(alpha = .6f)
+                    else -> scheme.primary
+                }
+                drawLine(
+                    color = markerColor.copy(alpha = .34f),
+                    start = Offset(center.x, railY - 9.dp.toPx()),
+                    end = Offset(center.x, railY + 9.dp.toPx()),
+                    strokeWidth = 1.5.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                when (marker.kind) {
+                    TimelineMarkerKind.CONFIRMED,
+                    TimelineMarkerKind.PLANNED,
+                    -> drawCircle(markerColor, 5.5.dp.toPx(), center)
+                    TimelineMarkerKind.NEXT -> {
+                        drawCircle(markerColor, 9.dp.toPx(), center, style = Stroke(2.5.dp.toPx()))
+                        drawCircle(markerColor, 3.5.dp.toPx(), center)
+                    }
+                    TimelineMarkerKind.COMPLETED -> {
+                        drawCircle(markerColor, 8.5.dp.toPx(), center)
+                        drawLine(
+                            scheme.onPrimary,
+                            Offset(center.x - 4.dp.toPx(), center.y),
+                            Offset(center.x - 1.dp.toPx(), center.y + 3.dp.toPx()),
+                            2.dp.toPx(),
+                            StrokeCap.Round,
+                        )
+                        drawLine(
+                            scheme.onPrimary,
+                            Offset(center.x - 1.dp.toPx(), center.y + 3.dp.toPx()),
+                            Offset(center.x + 4.5.dp.toPx(), center.y - 4.dp.toPx()),
+                            2.dp.toPx(),
+                            StrokeCap.Round,
+                        )
+                    }
+                }
+            }
+            if (hasWorkBand) {
+                val workY = 78.dp.toPx()
+                drawLine(
+                    color = ink.copy(alpha = .08f),
+                    start = Offset(startX, workY),
+                    end = Offset(endX, workY),
+                    strokeWidth = 8.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                state.workRanges.forEach { range ->
+                    drawRoundRect(
+                        color = scheme.tertiary.copy(alpha = .34f),
+                        topLeft = Offset(x(range.startMinute), workY - 5.dp.toPx()),
+                        size = Size(
+                            (x(range.endMinute) - x(range.startMinute)).coerceAtLeast(0f),
+                            10.dp.toPx(),
+                        ),
+                        cornerRadius = CornerRadius(5.dp.toPx()),
+                    )
+                }
+            }
+        }
+
+        val labelWidth = 58.dp
+        val maxLabelX = maxWidth - labelWidth
+        state.markers.forEach { marker ->
+            val labelX = (markerX(marker.minuteOfDay) - labelWidth / 2).coerceIn(0.dp, maxLabelX)
+            val next = marker.kind == TimelineMarkerKind.NEXT
+            Text(
+                formatRailMinute(marker.minuteOfDay),
+                modifier = Modifier.offset(x = labelX).width(labelWidth),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = if (next) FontWeight.ExtraBold else FontWeight.Medium,
+                color = if (next) scheme.primary else ink,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+            )
+            if (next) {
+                Text(
+                    "NEXT",
+                    modifier = Modifier.offset(x = labelX, y = 47.dp).width(labelWidth),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = scheme.primary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                )
+            }
+        }
+        Text(
+            "00",
+            modifier = Modifier.align(Alignment.TopStart).offset(y = 47.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = ink.copy(alpha = .6f),
+        )
+        Text(
+            "24",
+            modifier = Modifier.align(Alignment.TopEnd).offset(y = 47.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = ink.copy(alpha = .6f),
+        )
+        state.workLabel?.let { label ->
+            Text(
+                label,
+                modifier = Modifier.align(Alignment.TopCenter).offset(y = 88.dp),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = ink.copy(alpha = .7f),
+            )
+        }
+    }
+}
+
+private fun formatRailMinute(minute: Float): String {
+    val total = minute.toInt().coerceIn(0, MINUTES_PER_DAY - 1)
+    return String.format(java.util.Locale.US, "%02d:%02d", total / 60, total % 60)
+}
+
+// 设置面板：低频功能都收在这里，主界面只留每天要看的东西
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsSheet(state: ExpressiveHomeState, actions: ExpressiveHomeActions, onDismiss: () -> Unit) {
+    var modelsOpen by rememberSaveable { mutableStateOf(false) }
+    val muted = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 16.dp, end = 16.dp, bottom = 24.dp)
         ) {
-            Text("LOGOUT", color = MaterialTheme.colorScheme.error)
+            Text(
+                "SETTINGS",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            if (state.connected) {
+                val current = state.manualModels.firstOrNull { it.id == state.manualModelId }
+                SettingRow(
+                    title = "手动激活模型",
+                    detail = "只用于 ACTIVATE，自动激活不受影响",
+                    value = if (state.manualModelsLoading) "读取中…" else current?.name ?: state.manualModelId,
+                    trailing = if (modelsOpen) "▴" else "▾",
+                    onClick = {
+                        // 目录还没读到时，点这一行就是重试
+                        if (state.manualModels.isEmpty()) actions.refreshManualModels() else modelsOpen = !modelsOpen
+                    },
+                )
+                state.manualModelsError?.let {
+                    Text(
+                        it,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                AnimatedVisibility(modelsOpen && state.manualModels.isNotEmpty()) {
+                    Column {
+                        state.manualModels.forEach { model ->
+                            ModelOption(model, selected = model.id == state.manualModelId) {
+                                actions.selectManualModel(model.id)
+                                modelsOpen = false
+                            }
+                        }
+                        TextButton(
+                            onClick = actions.refreshManualModels,
+                            enabled = !state.manualModelsLoading,
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("重新读取模型目录")
+                        }
+                    }
+                }
+            }
+
+            if (state.contextAvailable) {
+                SettingRow(
+                    title = "最近一次手动请求",
+                    detail = state.contextSummary,
+                    trailing = if (state.contextExpanded) "▴" else "▾",
+                    onClick = actions.toggleContext,
+                )
+                AnimatedVisibility(state.contextExpanded) {
+                    Text(
+                        state.contextDetails,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            if (state.quotaDiagnosticsAvailable) {
+                SettingRow(
+                    title = "额度诊断",
+                    detail = state.quotaDiagnosticsSummary,
+                    trailing = if (state.quotaDiagnosticsExpanded) "▴" else "▾",
+                    onClick = actions.toggleQuotaDiagnostics,
+                )
+                AnimatedVisibility(state.quotaDiagnosticsExpanded) {
+                    Column(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        Text(state.quotaDiagnosticsDetails, style = MaterialTheme.typography.bodySmall)
+                        TextButton(
+                            onClick = actions.copyQuotaDiagnostics,
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("复制诊断记录")
+                        }
+                    }
+                }
+            }
+
+            SettingRow(
+                title = "夜间准时唤醒",
+                detail = "静默唤醒，不响铃、不振动",
+                value = if (state.exactAlarmReady) "已授权" else "未授权",
+                valueColor = if (state.exactAlarmReady) muted else MaterialTheme.colorScheme.error,
+                onClick = if (state.exactAlarmReady) null else actions.requestExactAlarm,
+            )
+            SettingRow(
+                title = "后台运行设置",
+                detail = "自启动、电池优化等系统设置",
+                onClick = actions.openBackgroundSettings,
+            )
+
+            if (state.logoutVisible) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                TextButton(
+                    onClick = {
+                        onDismiss()
+                        actions.logout()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("退出登录并停用自动任务", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
+/** onClick 为 null 时只展示状态，不可点也不画箭头。 */
+@Composable
+private fun SettingRow(
+    title: String,
+    detail: String?,
+    value: String? = null,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+    trailing: String = "›",
+    onClick: (() -> Unit)?,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            detail?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        value?.let {
+            Text(
+                it,
+                modifier = Modifier.padding(start = 12.dp).widthIn(max = 160.dp),
+                style = MaterialTheme.typography.bodyMedium,
+                color = valueColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (onClick != null) {
+            Text(
+                trailing,
+                modifier = Modifier.padding(start = 8.dp),
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModelOption(model: ProbeModel, selected: Boolean, onSelect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onSelect)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(model.name, style = MaterialTheme.typography.bodyMedium)
+            if (model.name != model.id) {
+                Text(
+                    model.id,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
         }
     }
 }
